@@ -1,10 +1,11 @@
 {
-  "name": "voice-agent",
+  "name": "voice-agent-busboy",
   "version": "1.0.0",
   "type": "module",
+  "engines": { "node": ">=18" },
   "dependencies": {
+    "busboy": "^1.6.0",
     "express": "^4.19.2",
-    "multer": "^1.4.5",
     "openai": "^4.65.0"
   },
   "scripts": {
