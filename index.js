@@ -1,9 +1,10 @@
 import express from "express";
 import Busboy from "busboy";
 import OpenAI from "openai";
+import { toFile } from "openai/uploads";
 
 const PORT = process.env.PORT || 3000;
-const APP_BEARER_TOKEN = process.env.APP_BEARER_TOKEN || ""; // optional
+const APP_BEARER_TOKEN = process.env.APP_BEARER_TOKEN || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 if (!OPENAI_API_KEY) {
@@ -14,7 +15,10 @@ if (!OPENAI_API_KEY) {
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const app = express();
 
-// ---------- LV deterministiskais parsētājs (system prompt) ----------
+// (neobligāti) ļaut JSON ķermeņus citu endpointu vajadzībām:
+app.use(express.json({ limit: "10mb" }));
+
+// ---------- LV deterministiskais parsētājs ----------
 const SYSTEM_PROMPT = `Tu esi deterministisks latviešu dabiskās valodas parsētājs, kas no īsa teikuma izvada TIKAI TĪRU JSON vienā no trim formām: calendar, reminder vai shopping. Atbilde bez skaidrojumiem, bez teksta ārpus JSON. Temperatūra = 0.
 
 Globālie noteikumi
@@ -60,81 +64,21 @@ PIRKUMU SARAKSTS
 { "type": "shopping", "lang": "lv", "items": "piens, maize, olas", "description": "Pirkumu saraksts" }
 
 Atgriez tikai vienu no formām.`;
-// -----------------------------------------------------------------
+// ---------------------------------------------------
 
 // Health check
 app.get("/", (_req, res) => res.json({ ok: true }));
 
-// Multipart upload ar Busboy (bez Multer)
-app.post("/ingest-audio", async (req, res) => {
-  try {
-    if (APP_BEARER_TOKEN) {
-      const auth = req.headers.authorization || "";
-      if (auth !== `Bearer ${APP_BEARER_TOKEN}`) {
-        return res.status(401).json({ error: "unauthorized" });
-      }
-    }
+// ===== Helpers =====
+function guessMime(filename) {
+  const f = (filename || "").toLowerCase();
+  if (f.endsWith(".m4a") || f.endsWith(".mp4")) return "audio/mp4";
+  if (f.endsWith(".mp3") || f.endsWith(".mpga")) return "audio/mpeg";
+  if (f.endsWith(".wav")) return "audio/wav";
+  if (f.endsWith(".webm")) return "audio/webm";
+  return "application/octet-stream";
+}
 
-    const bb = Busboy({ headers: req.headers, limits: { files: 1, fileSize: 8 * 1024 * 1024 } });
-    let fileBuf = Buffer.alloc(0);
-    let filename = "audio.m4a";
-
-    await new Promise((resolve, reject) => {
-      bb.on("file", (_name, stream, info) => {
-        filename = info?.filename || filename;
-        stream.on("data", (d) => { fileBuf = Buffer.concat([fileBuf, d]); });
-        stream.on("limit", () => reject(new Error("file_too_large")));
-        stream.on("end", () => {});
-      });
-      bb.on("error", reject);
-      bb.on("finish", resolve);
-      req.pipe(bb);
-    });
-
-    if (!fileBuf.length) return res.status(400).json({ error: "file_missing" });
-
-    // 1) Transcribe (Whisper)
-    const tr = await openai.audio.transcriptions.create({
-      model: "gpt-4o-mini-transcribe",
-      file: { name: filename, data: fileBuf }
-    });
-
-    // 2) Sagatavo laika enkurus (Europe/Riga)
-    const now = new Date();
-    const currentISO = toRigaISO(now);
-    const tomorrow = new Date(now.getTime() + 24*60*60*1000);
-    const tomorrowISO = toRigaISO(new Date(tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate(), 0, 0, 0));
-
-    const userMsg = `currentTime=${currentISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${tr.text}`;
-
-    // 3) Analīze ar GPT (JSON-only)
-    const chat = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
-      temperature: 0,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userMsg }
-      ]
-    });
-
-    let out;
-    try {
-      out = JSON.parse(chat.choices?.[0]?.message?.content || "{}");
-    } catch {
-      out = { type: "reminder", lang: "lv", start: currentISO, description: tr.text, hasTime: false };
-    }
-
-    out.raw_transcript = tr.text;
-    return res.json(out);
-
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "processing_failed", details: String(err) });
-  }
-});
-
-// Palīgfunkcija: ISO ar pareizo +02/+03 (Europe/Riga)
 function toRigaISO(d) {
   const tz = "Europe/Riga";
   const f = new Intl.DateTimeFormat("en-GB", {
@@ -154,4 +98,81 @@ function toRigaISO(d) {
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${sign}${hh}:${mm}`;
 }
 
-app.listen(PORT, () => console.log("Voice agent (busboy) running on", PORT));
+// ===== Main endpoint (multipart/form-data with "file") =====
+app.post("/ingest-audio", async (req, res) => {
+  try {
+    // Auth
+    if (APP_BEARER_TOKEN) {
+      const auth = req.headers.authorization || "";
+      if (auth !== `Bearer ${APP_BEARER_TOKEN}`) {
+        return res.status(401).json({ error: "unauthorized" });
+      }
+    }
+
+    // Parse multipart
+    const fields = {};
+    let fileBuf = Buffer.alloc(0);
+    let filename = "audio.m4a";
+
+    const bb = Busboy({ headers: req.headers, limits: { files: 1, fileSize: 8 * 1024 * 1024 } });
+
+    await new Promise((resolve, reject) => {
+      bb.on("field", (name, val) => { fields[name] = val; });
+      bb.on("file", (_name, stream, info) => {
+        filename = info?.filename || filename;
+        stream.on("data", (d) => { fileBuf = Buffer.concat([fileBuf, d]); });
+        stream.on("limit", () => reject(new Error("file_too_large")));
+        stream.on("end", () => {});
+      });
+      bb.on("error", reject);
+      bb.on("finish", resolve);
+      req.pipe(bb);
+    });
+
+    if (!fileBuf.length) return res.status(400).json({ error: "file_missing" });
+
+    // 1) Transcribe (OpenAI) — use toFile for correct multipart
+    const mime = guessMime(filename);
+    const file = await toFile(fileBuf, filename, { type: mime });
+
+    const tr = await openai.audio.transcriptions.create({
+      model: "gpt-4o-mini-transcribe",
+      file
+    });
+
+    // 2) Anchors
+    const nowISO = fields.currentTime || toRigaISO(new Date());
+    const tomorrow = new Date(Date.now() + 24 * 3600 * 1000);
+    const tomorrowISO = fields.tomorrowExample || toRigaISO(new Date(tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate(), 0, 0, 0));
+
+    const userMsg = `currentTime=${nowISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${tr.text}`;
+
+    // 3) Analyze → JSON-only
+    const chat = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userMsg }
+      ]
+    });
+
+    let out;
+    try {
+      out = JSON.parse(chat.choices?.[0]?.message?.content || "{}");
+    } catch {
+      out = { type: "reminder", lang: "lv", start: nowISO, description: tr.text, hasTime: false };
+    }
+
+    out.raw_transcript = tr.text;
+    return res.json(out);
+
+  } catch (e) {
+    console.error("processing_failed:", e?.response?.status || "", e?.response?.data || "", e);
+    return res.status(500).json({ error: "processing_failed", details: String(e) });
+  }
+});
+
+// Start
+app.listen(PORT, () => console.log("Voice agent (busboy + toFile) running on", PORT));
