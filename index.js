@@ -1,17 +1,20 @@
-
 import express from "express";
-import multer from "multer";
+import Busboy from "busboy";
 import OpenAI from "openai";
 
-// --- Config ---
 const PORT = process.env.PORT || 3000;
-const APP_BEARER_TOKEN = process.env.APP_BEARER_TOKEN; // optional: set to enable simple auth
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const APP_BEARER_TOKEN = process.env.APP_BEARER_TOKEN || ""; // optional
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
+if (!OPENAI_API_KEY) {
+  console.error("Missing OPENAI_API_KEY env var");
+  process.exit(1);
+}
+
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const app = express();
-const upload = multer();
 
-// Deterministic LV parser system prompt
+// ---------- LV deterministiskais parsētājs (system prompt) ----------
 const SYSTEM_PROMPT = `Tu esi deterministisks latviešu dabiskās valodas parsētājs, kas no īsa teikuma izvada TIKAI TĪRU JSON vienā no trim formām: calendar, reminder vai shopping. Atbilde bez skaidrojumiem, bez teksta ārpus JSON. Temperatūra = 0.
 
 Globālie noteikumi
@@ -57,15 +60,14 @@ PIRKUMU SARAKSTS
 { "type": "shopping", "lang": "lv", "items": "piens, maize, olas", "description": "Pirkumu saraksts" }
 
 Atgriez tikai vienu no formām.`;
+// -----------------------------------------------------------------
 
 // Health check
 app.get("/", (_req, res) => res.json({ ok: true }));
 
-app.post("/ingest-audio", upload.single("file"), async (req, res) => {
+// Multipart upload ar Busboy (bez Multer)
+app.post("/ingest-audio", async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: "file_missing" });
-
-    // Optional Bearer auth
     if (APP_BEARER_TOKEN) {
       const auth = req.headers.authorization || "";
       if (auth !== `Bearer ${APP_BEARER_TOKEN}`) {
@@ -73,56 +75,58 @@ app.post("/ingest-audio", upload.single("file"), async (req, res) => {
       }
     }
 
+    const bb = Busboy({ headers: req.headers, limits: { files: 1, fileSize: 8 * 1024 * 1024 } });
+    let fileBuf = Buffer.alloc(0);
+    let filename = "audio.m4a";
+
+    await new Promise((resolve, reject) => {
+      bb.on("file", (_name, stream, info) => {
+        filename = info?.filename || filename;
+        stream.on("data", (d) => { fileBuf = Buffer.concat([fileBuf, d]); });
+        stream.on("limit", () => reject(new Error("file_too_large")));
+        stream.on("end", () => {});
+      });
+      bb.on("error", reject);
+      bb.on("finish", resolve);
+      req.pipe(bb);
+    });
+
+    if (!fileBuf.length) return res.status(400).json({ error: "file_missing" });
+
     // 1) Transcribe (Whisper)
-    const transcription = await openai.audio.transcriptions.create({
+    const tr = await openai.audio.transcriptions.create({
       model: "gpt-4o-mini-transcribe",
-      file: { name: req.file.originalname, data: req.file.buffer }
+      file: { name: filename, data: fileBuf }
     });
 
-    // 2) Build user message with anchors
-    // Europe/Riga now:
+    // 2) Sagatavo laika enkurus (Europe/Riga)
     const now = new Date();
-    // Get offset for Europe/Riga via Intl (best-effort; real prod should compute via tz lib)
-    const tz = "Europe/Riga";
-    const fmt = new Intl.DateTimeFormat("en-GB", {
-      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
-      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
-    });
-    const parts = Object.fromEntries(fmt.formatToParts(now).map(p => [p.type, p.value]));
-    const currentISO = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${offsetForRiga(now)}`;
-
+    const currentISO = toRigaISO(now);
     const tomorrow = new Date(now.getTime() + 24*60*60*1000);
-    const partsT = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
-      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
-      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
-    }).formatToParts(tomorrow).map(p => [p.type, p.value]));
-    const tomorrowISO = `${partsT.year}-${partsT.month}-${partsT.day}T00:00:00${offsetForRiga(tomorrow)}`;
+    const tomorrowISO = toRigaISO(new Date(tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate(), 0, 0, 0));
 
-    const userContent = `currentTime=${currentISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${transcription.text}`;
+    const userMsg = `currentTime=${currentISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${tr.text}`;
 
-    // 3) Analyze → JSON-only
-    const completion = await openai.chat.completions.create({
+    // 3) Analīze ar GPT (JSON-only)
+    const chat = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
       temperature: 0,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userContent }
+        { role: "user", content: userMsg }
       ]
     });
 
-    const jsonText = completion.choices?.[0]?.message?.content || "{}";
-    let parsed;
+    let out;
     try {
-      parsed = JSON.parse(jsonText);
+      out = JSON.parse(chat.choices?.[0]?.message?.content || "{}");
     } catch {
-      // fallback minimal response
-      parsed = { type: "reminder", lang: "lv", start: currentISO, description: transcription.text, hasTime: false };
+      out = { type: "reminder", lang: "lv", start: currentISO, description: tr.text, hasTime: false };
     }
 
-    // Add raw transcript for client-side display/debug
-    parsed.raw_transcript = transcription.text;
-    return res.json(parsed);
+    out.raw_transcript = tr.text;
+    return res.json(out);
 
   } catch (err) {
     console.error(err);
@@ -130,15 +134,16 @@ app.post("/ingest-audio", upload.single("file"), async (req, res) => {
   }
 });
 
-// Helper: crude offset for Europe/Riga (handles DST approx via locale; if mismatch, override on client)
-function offsetForRiga(d) {
-  // Create the same UTC time and then compute tz offset string
+// Palīgfunkcija: ISO ar pareizo +02/+03 (Europe/Riga)
+function toRigaISO(d) {
   const tz = "Europe/Riga";
-  const iso = new Intl.DateTimeFormat("en-GB", {
-    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+  const f = new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false
   }).formatToParts(d);
-  const parts = Object.fromEntries(iso.map(p => [p.type, p.value]));
+  const parts = Object.fromEntries(f.map(p => [p.type, p.value]));
   const local = Date.parse(`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}Z`);
   const utc = d.getTime();
   const offsetMin = Math.round((local - utc) / 60000);
@@ -146,9 +151,7 @@ function offsetForRiga(d) {
   const abs = Math.abs(offsetMin);
   const hh = String(Math.floor(abs / 60)).padStart(2, "0");
   const mm = String(abs % 60).padStart(2, "0");
-  return `${sign}${hh}:${mm}`;
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${sign}${hh}:${mm}`;
 }
 
-app.listen(PORT, () => {
-  console.log("Voice agent server running on", PORT);
-});
+app.listen(PORT, () => console.log("Voice agent (busboy) running on", PORT));
