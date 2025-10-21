@@ -1,3 +1,4 @@
+// index.js
 import express from "express";
 import Busboy from "busboy";
 import OpenAI from "openai";
@@ -12,11 +13,11 @@ if (!OPENAI_API_KEY) {
   process.exit(1);
 }
 
-// Limits (var mainīt ar ENV vēlāk)
+// Plāni/limiti (pielāgojami ar ENV)
 const BASIC_DAILY = Number(process.env.BASIC_DAILY || 5);
 const PRO_DAILY   = Number(process.env.PRO_DAILY   || 10);
 const PRO_MONTHLY = Number(process.env.PRO_MONTHLY || 300);
-// Iekšējais “piedošanas” buferis (UI to neredz)
+// “Grace” – iekšējais papildlimits, ko UI neredz (lietotāju aizsardzībai)
 const GRACE_DAILY = Number(process.env.GRACE_DAILY || 2);
 
 // ---------------- OPENAI/APP ----------------
@@ -35,6 +36,10 @@ function guessMime(filename) {
 }
 
 function toRigaISO(d) {
+  // Drošības “guards”
+  if (!(d instanceof Date)) d = new Date(d);
+  if (isNaN(d?.getTime?.())) d = new Date();
+
   const tz = "Europe/Riga";
   const f = new Intl.DateTimeFormat("en-GB", {
     timeZone: tz,
@@ -65,19 +70,18 @@ function rigaOffsetMinutes(date = new Date()) {
 }
 
 function rigaMidnightResetISO() {
-  // Nākamā vietējā pusnakts (droši pret i18n)
+  // Nākamā vietējā pusnakts (stabils aprēķins)
   const now = new Date();
   const offMin = rigaOffsetMinutes(now);
   const localMs = now.getTime() + offMin * 60000;
   const local = new Date(localMs);
   const next = new Date(local);
-  next.setHours(24, 0, 0, 0); // nākamā pusnakts vietējā laikā
+  next.setHours(24, 0, 0, 0);
   const backUtc = new Date(next.getTime() - offMin * 60000);
   return toRigaISO(backUtc);
 }
 
 function rigaDayKey(date = new Date()) {
-  // YYYYMMDD Europe/Riga
   const tz = "Europe/Riga";
   const f = new Intl.DateTimeFormat("en-GB", {
     timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit"
@@ -86,12 +90,46 @@ function rigaDayKey(date = new Date()) {
   return `${parts.year}${parts.month}${parts.day}`;
 }
 
-function wordCount(t) {
-  if (!t) return 0;
-  return (t.trim().match(/\p{L}+/gu) || []).length;
+function rigaMonthKey(date = new Date()) {
+  const tz = "Europe/Riga";
+  const y = new Intl.DateTimeFormat("en-GB",{timeZone: tz,year:"numeric"}).format(date);
+  const m = new Intl.DateTimeFormat("en-GB",{timeZone: tz,month:"2-digit"}).format(date);
+  return `${y}${m}`;
 }
-function charCount(t) {
-  return (t || "").trim().replace(/\s+/g, "").length;
+
+function nextMonthResetISO() {
+  // 1. nākamā mēneša 1. diena 00:00 (Rīgas laikā)
+  const now = new Date();
+  const offMin = rigaOffsetMinutes(now);
+  const localMs = now.getTime() + offMin * 60000;
+  const local = new Date(localMs);
+  const next = new Date(local);
+  next.setMonth(local.getMonth() + 1, 1);
+  next.setHours(0,0,0,0);
+  const backUtc = new Date(next.getTime() - offMin * 60000);
+  return toRigaISO(backUtc);
+}
+
+function wordCount(t) { return (t?.trim()?.match(/\p{L}+/gu) || []).length; }
+function charCount(t) { return (t || "").trim().replace(/\s+/g, "").length; }
+
+// Nelielas LV normalizācijas pirms parsēšanas
+function normalizeLvTranscript(t) {
+  if (!t) return t;
+  let s = t.toLowerCase();
+
+  // biežākās kļūdas
+  s = s.replace(/\breit\b/g, "rīt")
+       .replace(/\bpulkstenis\b/g, "pulksten")
+       .replace(/\bnullī\b/g, "nulles");
+
+  // “divpadsmitos” heuristika:
+  const hasNight = /\bnakt(ī|i)\b/.test(s);
+  if (/\bdivpadsmitos\b/.test(s) && !/\b:\d{2}\b/.test(s)) {
+    if (hasNight) s = s.replace(/\bdivpadsmitos\b/g, "00:00");
+    else s = s.replace(/\bdivpadsmitos\b/g, "12:00");
+  }
+  return s;
 }
 
 // ---------------- LV parser prompt ----------------
@@ -141,7 +179,7 @@ PIRKUMU SARAKSTS
 
 Atgriez tikai vienu no formām.`;
 
-// -------------- In-memory usage store (tests) --------------
+// -------------- In-memory usage store (demo/testam) --------------
 /**
  * usage = {
  *   [userId]: {
@@ -165,9 +203,7 @@ function getPlanFor(userId, forcedPlan) {
 function initUsageFor(userId) {
   const now = new Date();
   const dayKey = rigaDayKey(now);
-  const y = new Intl.DateTimeFormat("en-GB",{timeZone:"Europe/Riga",year:"numeric"}).format(now);
-  const m = new Intl.DateTimeFormat("en-GB",{timeZone:"Europe/Riga",month:"2-digit"}).format(now);
-  const monthKey = `${y}${m}`;
+  const monthKey = rigaMonthKey(now);
 
   if (!usage[userId]) {
     usage[userId] = { dayKey, dailyUsed: 0, dailyUsedGrace: 0, monthKey, monthlyUsed: 0 };
@@ -195,7 +231,7 @@ function canConsume(userId, plan) {
     }
   }
 
-  const effectiveDailyLimit = plan.dailyLimit + GRACE_DAILY; // iekšējais, UI neredz
+  const effectiveDailyLimit = plan.dailyLimit + GRACE_DAILY; // iekšējais “grace”
   if (u.dailyUsed >= effectiveDailyLimit) {
     return { ok: false, reason: "daily_quota_exceeded" };
   }
@@ -213,19 +249,7 @@ function quotaPayload(userId, plan) {
   initUsageFor(userId);
   const dailyReset = rigaMidnightResetISO();
 
-  // nākamā mēneša 1. datums 00:00 Europe/Riga
-  const now = new Date();
-  const tz = "Europe/Riga";
-  const d = new Date(now.toLocaleString("en-GB", { timeZone: tz }));
-  d.setMonth(d.getMonth() + 1, 1);
-  d.setHours(0,0,0,0);
-  const monthlyReset = toRigaISO(new Date(d));
-
   const dailyRemaining = Math.max(0, plan.dailyLimit - usage[userId].dailyUsed);
-  const monthlyRemaining = plan.monthlyLimit != null
-    ? Math.max(0, plan.monthlyLimit - usage[userId].monthlyUsed)
-    : null;
-
   const payload = {
     plan: plan.name,
     dailyLimit: plan.dailyLimit,
@@ -233,17 +257,29 @@ function quotaPayload(userId, plan) {
     dailyRemaining,
     dailyReset
   };
+
   if (plan.monthlyLimit != null) {
+    const monthlyRemaining = Math.max(0, plan.monthlyLimit - usage[userId].monthlyUsed);
     payload.monthlyLimit = plan.monthlyLimit;
     payload.monthlyUsed = usage[userId].monthlyUsed;
     payload.monthlyRemaining = monthlyRemaining;
-    payload.monthlyReset = monthlyReset;
+    payload.monthlyReset = nextMonthResetISO();
   }
+
   return payload;
 }
 
 // -------------- Health --------------
 app.get("/", (_req, res) => res.json({ ok: true }));
+
+app.get("/health", async (_req, res) => {
+  try {
+    const ping = toRigaISO(new Date());
+    return res.json({ ok: true, time: ping, model: "gpt-4o-mini-transcribe / gpt-4.1-mini" });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
 
 // -------------- QUOTA --------------
 app.get("/quota", (req, res) => {
@@ -255,7 +291,7 @@ app.get("/quota", (req, res) => {
     return res.json(quotaPayload(userId, plan));
   } catch (e) {
     console.error("quota_failed:", e);
-    // droša pagaidu atbilde
+    // droša pagaidu atbilde, lai app nesaņem 500
     return res.status(200).json({
       plan: "basic",
       dailyLimit: BASIC_DAILY,
@@ -316,7 +352,7 @@ app.post("/ingest-audio", async (req, res) => {
     if (!fileBuf.length) return res.status(400).json({ error: "file_missing" });
     if (fileBuf.length < 2 * 1024) return res.status(400).json({ error: "file_too_small" });
 
-    // === Client VAD telemetrija (izvēles, bet ļoti vēlams) ===
+    // === Client VAD telemetrija (no app) ===
     const vadActiveSeconds = parseFloat(fields.vadActiveSeconds || "0");
     const recordingDurationSeconds = parseFloat(fields.recordingDurationSeconds || "0");
     const MIN_ACTIVE_SPEECH_SEC = 0.8;
@@ -348,7 +384,8 @@ app.post("/ingest-audio", async (req, res) => {
       ...(langHint ? { language: langHint } : {})
     });
 
-    const transcript = (tr?.text || "").trim();
+    const rawTranscript = (tr?.text || "").trim();
+    const transcript = normalizeLvTranscript(rawTranscript);
 
     // Teksta validācija (mīkstāka)
     const wc = wordCount(transcript);
@@ -358,10 +395,12 @@ app.post("/ingest-audio", async (req, res) => {
       return res.status(422).json({ error: "no_speech_detected", raw_transcript: transcript });
     }
 
-    // Enkuri
+    // Enkuri parserim
     const nowISO = fields.currentTime || toRigaISO(new Date());
     const tomorrow = new Date(Date.now() + 24 * 3600 * 1000);
-    const tomorrowISO = fields.tomorrowExample || toRigaISO(new Date(tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate(), 0, 0, 0));
+    const tomorrowISO = fields.tomorrowExample || toRigaISO(new Date(
+      tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate(), 0, 0, 0
+    ));
 
     const userMsg = `currentTime=${nowISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${transcript}`;
 
@@ -392,8 +431,8 @@ app.post("/ingest-audio", async (req, res) => {
       t: new Date().toISOString(),
       rid: requestId, userId, route: "/ingest-audio",
       bytes: fileBuf.length, wc, cc, plan: plan.name,
-      used: usage[userId].dailyUsed, monthly: usage[userId].monthlyUsed,
-      langHint
+      usedDaily: usage[userId].dailyUsed, usedMonthly: usage[userId].monthlyUsed,
+      vadActiveSeconds, recordingDurationSeconds, langHint
     }));
 
     return res.json(out);
