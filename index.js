@@ -16,7 +16,7 @@ if (!OPENAI_API_KEY) {
 const BASIC_DAILY = Number(process.env.BASIC_DAILY || 5);
 const PRO_DAILY   = Number(process.env.PRO_DAILY   || 10);
 const PRO_MONTHLY = Number(process.env.PRO_MONTHLY || 300);
-// Iekšējais “piedošanas” buferis (nerādam UI)
+// Iekšējais “piedošanas” buferis (UI to neredz)
 const GRACE_DAILY = Number(process.env.GRACE_DAILY || 2);
 
 // ---------------- OPENAI/APP ----------------
@@ -33,11 +33,14 @@ function guessMime(filename) {
   if (f.endsWith(".webm")) return "audio/webm";
   return "application/octet-stream";
 }
+
 function toRigaISO(d) {
   const tz = "Europe/Riga";
   const f = new Intl.DateTimeFormat("en-GB", {
-    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+    timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false
   }).formatToParts(d);
   const parts = Object.fromEntries(f.map(p => [p.type, p.value]));
   const local = Date.parse(`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}Z`);
@@ -49,6 +52,30 @@ function toRigaISO(d) {
   const mm = String(abs % 60).padStart(2, "0");
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${sign}${hh}:${mm}`;
 }
+
+function rigaOffsetMinutes(date = new Date()) {
+  const iso = toRigaISO(date); // "YYYY-MM-DDTHH:MM:SS+HH:MM"
+  const m = iso.match(/[+-]\d{2}:\d{2}$/);
+  if (!m) return 0;
+  const [h, min] = m[0].split(":");
+  const sign = h.startsWith("-") ? -1 : 1;
+  const hh = Math.abs(parseInt(h, 10));
+  const mm = parseInt(min, 10);
+  return sign * (hh * 60 + mm);
+}
+
+function rigaMidnightResetISO() {
+  // Nākamā vietējā pusnakts (droši pret i18n)
+  const now = new Date();
+  const offMin = rigaOffsetMinutes(now);
+  const localMs = now.getTime() + offMin * 60000;
+  const local = new Date(localMs);
+  const next = new Date(local);
+  next.setHours(24, 0, 0, 0); // nākamā pusnakts vietējā laikā
+  const backUtc = new Date(next.getTime() - offMin * 60000);
+  return toRigaISO(backUtc);
+}
+
 function rigaDayKey(date = new Date()) {
   // YYYYMMDD Europe/Riga
   const tz = "Europe/Riga";
@@ -58,15 +85,7 @@ function rigaDayKey(date = new Date()) {
   const parts = Object.fromEntries(f.map(p => [p.type, p.value]));
   return `${parts.year}${parts.month}${parts.day}`;
 }
-function rigaMidnightResetISO() {
-  const now = new Date();
-  const tz = "Europe/Riga";
-  // izrēķinam rītdienas pusnakti Rīgas laikā
-  const d = new Date(now.toLocaleString("en-GB", { timeZone: tz }));
-  d.setHours(24,0,0,0);
-  // atpakaļ uz ISO ar pareizu ofsetu
-  return toRigaISO(d);
-}
+
 function wordCount(t) {
   if (!t) return 0;
   return (t.trim().match(/\p{L}+/gu) || []).length;
@@ -128,20 +147,21 @@ Atgriez tikai vienu no formām.`;
  *   [userId]: {
  *      dayKey: "YYYYMMDD",
  *      dailyUsed: number,
- *      dailyUsedGrace: number, // iekšējais “piedošanas” skaitītājs
+ *      dailyUsedGrace: number,
  *      monthKey: "YYYYMM",
  *      monthlyUsed: number
  *   }
  * }
  */
 const usage = Object.create(null);
+
 function getPlanFor(userId, forcedPlan) {
-  // Testam: ļaujam “X-Plan: pro” piespēlēt Pro (TestFlight)
   const plan = (forcedPlan || "").toLowerCase() === "pro" ? "pro" : "basic";
   return plan === "pro"
     ? { name: "pro", dailyLimit: PRO_DAILY, monthlyLimit: PRO_MONTHLY }
     : { name: "basic", dailyLimit: BASIC_DAILY, monthlyLimit: null };
 }
+
 function initUsageFor(userId) {
   const now = new Date();
   const dayKey = rigaDayKey(now);
@@ -153,59 +173,54 @@ function initUsageFor(userId) {
     usage[userId] = { dayKey, dailyUsed: 0, dailyUsedGrace: 0, monthKey, monthlyUsed: 0 };
     return;
   }
-  // reset day
   if (usage[userId].dayKey !== dayKey) {
     usage[userId].dayKey = dayKey;
     usage[userId].dailyUsed = 0;
     usage[userId].dailyUsedGrace = 0;
   }
-  // reset month
   if (usage[userId].monthKey !== monthKey) {
     usage[userId].monthKey = monthKey;
     usage[userId].monthlyUsed = 0;
   }
 }
+
 function canConsume(userId, plan) {
   initUsageFor(userId);
   const u = usage[userId];
 
-  // Pro mēneša spainis, ja ir definēts
   if (plan.name === "pro" && plan.monthlyLimit != null) {
     if (u.monthlyUsed >= plan.monthlyLimit) return { ok: false, reason: "monthly_quota_exceeded" };
-    // dienas "mīkstais limits": ļaujam pāri daily, kamēr ir monthlyRemaining
     if (u.dailyUsed >= plan.dailyLimit && u.monthlyUsed < plan.monthlyLimit) {
       return { ok: true, softDailyExceeded: true };
     }
   }
 
-  // Basic — “griezējs” ir dienas limits, ar iekšējo grace
-  const effectiveDailyLimit = plan.dailyLimit + GRACE_DAILY; // iekšējais, UI to neredz
+  const effectiveDailyLimit = plan.dailyLimit + GRACE_DAILY; // iekšējais, UI neredz
   if (u.dailyUsed >= effectiveDailyLimit) {
     return { ok: false, reason: "daily_quota_exceeded" };
   }
   return { ok: true };
 }
+
 function consume(userId, plan) {
   initUsageFor(userId);
   const u = usage[userId];
   u.dailyUsed += 1;
   if (plan.name === "pro" && plan.monthlyLimit != null) u.monthlyUsed += 1;
 }
+
 function quotaPayload(userId, plan) {
   initUsageFor(userId);
-  const u = usage[userId];
-  const reset = rigaMidnightResetISO();
-  const monthReset = (() => {
-    // nākamā mēneša 1. datums 00:00 Europe/Riga
-    const now = new Date();
-    const tz = "Europe/Riga";
-    const d = new Date(now.toLocaleString("en-GB", { timeZone: tz }));
-    d.setMonth(d.getMonth() + 1, 1);
-    d.setHours(0,0,0,0);
-    return toRigaISO(d);
-  })();
+  const dailyReset = rigaMidnightResetISO();
 
-  // UI rādām tikai oficiālo dienas limitu, nevis ar GRACE
+  // nākamā mēneša 1. datums 00:00 Europe/Riga
+  const now = new Date();
+  const tz = "Europe/Riga";
+  const d = new Date(now.toLocaleString("en-GB", { timeZone: tz }));
+  d.setMonth(d.getMonth() + 1, 1);
+  d.setHours(0,0,0,0);
+  const monthlyReset = toRigaISO(new Date(d));
+
   const dailyRemaining = Math.max(0, plan.dailyLimit - usage[userId].dailyUsed);
   const monthlyRemaining = plan.monthlyLimit != null
     ? Math.max(0, plan.monthlyLimit - usage[userId].monthlyUsed)
@@ -216,13 +231,13 @@ function quotaPayload(userId, plan) {
     dailyLimit: plan.dailyLimit,
     dailyUsed: usage[userId].dailyUsed,
     dailyRemaining,
-    dailyReset: reset
+    dailyReset
   };
   if (plan.monthlyLimit != null) {
     payload.monthlyLimit = plan.monthlyLimit;
     payload.monthlyUsed = usage[userId].monthlyUsed;
     payload.monthlyRemaining = monthlyRemaining;
-    payload.monthlyReset = monthReset;
+    payload.monthlyReset = monthlyReset;
   }
   return payload;
 }
@@ -230,13 +245,25 @@ function quotaPayload(userId, plan) {
 // -------------- Health --------------
 app.get("/", (_req, res) => res.json({ ok: true }));
 
-// -------------- QUOTA (Basic/Pro skeleton) --------------
+// -------------- QUOTA --------------
 app.get("/quota", (req, res) => {
-  const userId = String(req.headers["x-user-id"] || "anon");
-  const forcedPlan = String(req.headers["x-plan"] || "");
-  const plan = getPlanFor(userId, forcedPlan);
-  initUsageFor(userId);
-  return res.json(quotaPayload(userId, plan));
+  try {
+    const userId = String(req.headers["x-user-id"] || "anon");
+    const forcedPlan = String(req.headers["x-plan"] || "");
+    const plan = getPlanFor(userId, forcedPlan);
+    initUsageFor(userId);
+    return res.json(quotaPayload(userId, plan));
+  } catch (e) {
+    console.error("quota_failed:", e);
+    // droša pagaidu atbilde
+    return res.status(200).json({
+      plan: "basic",
+      dailyLimit: BASIC_DAILY,
+      dailyUsed: 0,
+      dailyRemaining: BASIC_DAILY,
+      dailyReset: rigaMidnightResetISO()
+    });
+  }
 });
 
 // -------------- INGEST (multipart form-data: file=) --------------
@@ -255,7 +282,7 @@ app.post("/ingest-audio", async (req, res) => {
       }
     }
 
-    // QUOTA CHECK (pirms procesa) — tikai informatīvi, bloķēsim pēc validācijas
+    // QUOTA gate (pirms procesa)
     const gate = canConsume(userId, plan);
     if (!gate.ok) {
       if (gate.reason === "daily_quota_exceeded") {
@@ -289,20 +316,45 @@ app.post("/ingest-audio", async (req, res) => {
     if (!fileBuf.length) return res.status(400).json({ error: "file_missing" });
     if (fileBuf.length < 2 * 1024) return res.status(400).json({ error: "file_too_small" });
 
-    // Transcribe
+    // === Client VAD telemetrija (izvēles, bet ļoti vēlams) ===
+    const vadActiveSeconds = parseFloat(fields.vadActiveSeconds || "0");
+    const recordingDurationSeconds = parseFloat(fields.recordingDurationSeconds || "0");
+    const MIN_ACTIVE_SPEECH_SEC = 0.8;
+    const MIN_ACTIVE_RATIO = 0.20;
+
+    if (recordingDurationSeconds > 0) {
+      const ratio = vadActiveSeconds / recordingDurationSeconds;
+      const vadOk = vadActiveSeconds >= MIN_ACTIVE_SPEECH_SEC && ratio >= MIN_ACTIVE_RATIO;
+      if (!vadOk) {
+        return res.status(422).json({
+          error: "no_speech_detected",
+          reason: "client_vad_filter",
+          vadActiveSeconds,
+          recordingDurationSeconds
+        });
+      }
+    }
+
+    // Transcribe (ar valodas mājienu)
+    const userLang = String(fields.lang || req.headers["x-lang"] || "").toLowerCase();
+    const langHint = (userLang === "lv" || userLang === "lav" || userLang === "latvian") ? "lv" : undefined;
+
     const mime = guessMime(filename);
     const file = await toFile(fileBuf, filename, { type: mime });
+
     const tr = await openai.audio.transcriptions.create({
       model: "gpt-4o-mini-transcribe",
-      file
+      file,
+      ...(langHint ? { language: langHint } : {})
     });
+
     const transcript = (tr?.text || "").trim();
 
-    // Server-side “no speech” validācija
+    // Teksta validācija (mīkstāka)
     const wc = wordCount(transcript);
     const cc = charCount(transcript);
-    if (wc < 2 || cc < 3) {
-      // neatņemam kvotu
+    const accept = (wc >= 2) || (wc >= 1 && cc >= 5);
+    if (!accept) {
       return res.status(422).json({ error: "no_speech_detected", raw_transcript: transcript });
     }
 
@@ -328,28 +380,20 @@ app.post("/ingest-audio", async (req, res) => {
     try {
       out = JSON.parse(chat.choices?.[0]?.message?.content || "{}");
     } catch {
-      // fallback: remider bez laika
       out = { type: "reminder", lang: "lv", start: nowISO, description: transcript, hasTime: false };
     }
     out.raw_transcript = transcript;
 
-    // ŠEIT — TIKAI DERĪGA REZULTĀTA GADĪJUMĀ SKAITĀM KVOTU
+    // Derīgs rezultāts → skaitām kvotu
     consume(userId, plan);
 
-    // Ja tagad vairs nevaram (after consume) — atdodam 429 (reti, bet korekti)
-    const gate2 = canConsume(userId, plan);
-    if (!gate2.ok && gate2.reason === "daily_quota_exceeded") {
-      // Atgriežam rezultātu, bet arī paziņojam, ka limits ir sasniegts (UI var rādīt paziņojumu)
-      // Ja negribi šādu hibrīdu, komentē ārā un vienkārši atgriez 429 (bet lietotājam var būt “sajūta, ka aprāva”).
-      // return res.status(429).json({ error: "daily_quota_exceeded", ...quotaPayload(userId, plan) });
-    }
-
-    // Logs vienā rindā
+    // Logs
     console.log(JSON.stringify({
       t: new Date().toISOString(),
       rid: requestId, userId, route: "/ingest-audio",
       bytes: fileBuf.length, wc, cc, plan: plan.name,
-      used: usage[userId].dailyUsed, monthly: usage[userId].monthlyUsed
+      used: usage[userId].dailyUsed, monthly: usage[userId].monthlyUsed,
+      langHint
     }));
 
     return res.json(out);
