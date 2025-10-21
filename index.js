@@ -1,51 +1,93 @@
-// index.js
 import express from "express";
 import Busboy from "busboy";
 import OpenAI from "openai";
 import { toFile } from "openai/uploads";
 
-// ------------------ ENV ------------------
+/* ===== ENV ===== */
 const PORT = process.env.PORT || 3000;
 const APP_BEARER_TOKEN = process.env.APP_BEARER_TOKEN || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+// kvotu konfigurācija (no Railway Variables)
+const BASIC_DAILY   = Number(process.env.BASIC_DAILY   || 5);
+const PRO_DAILY     = Number(process.env.PRO_DAILY     || 10);
+const PRO_MONTHLY   = Number(process.env.PRO_MONTHLY   || 300);
+const GRACE_DAILY   = Number(process.env.GRACE_DAILY   || 2); // “kļūdu buferis”
+
 if (!OPENAI_API_KEY) {
   console.error("Missing OPENAI_API_KEY env var");
   process.exit(1);
 }
 
-// Plāni/limiti (pielāgojami ar ENV)
-const BASIC_DAILY = Number(process.env.BASIC_DAILY || 5);
-const PRO_DAILY   = Number(process.env.PRO_DAILY   || 10);
-const PRO_MONTHLY = Number(process.env.PRO_MONTHLY || 300);
-// “Grace” – iekšējais papildlimits, ko UI neredz (lietotāju aizsardzībai)
-const GRACE_DAILY = Number(process.env.GRACE_DAILY || 2);
-
-// ---------------- OPENAI/APP ----------------
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
-// ---------------- Helpers ----------------
-function guessMime(filename) {
-  const f = (filename || "").toLowerCase();
-  if (f.endsWith(".m4a") || f.endsWith(".mp4")) return "audio/mp4";
-  if (f.endsWith(".mp3") || f.endsWith(".mpga")) return "audio/mpeg";
-  if (f.endsWith(".wav")) return "audio/wav";
-  if (f.endsWith(".webm")) return "audio/webm";
-  return "application/octet-stream";
+/* ===== In-memory kvotu stāvoklis (vienkārši; pietiek MVP) =====
+   Struktūra:
+   usage[userId] = {
+     plan: "basic"|"pro",
+     daily: { dayKey: "YYYY-MM-DD", used: number, graceUsed: number },
+     monthly: { monthKey: "YYYY-MM", used: number }   // tikai Pro
+   }
+*/
+const usage = new Map();
+
+/* ===== Palīgfunkcijas ===== */
+function todayKeyRiga(d = new Date()) {
+  const tz = "Europe/Riga";
+  const f = new Intl.DateTimeFormat("en-CA", { timeZone: tz, dateStyle: "short" })
+    .format(d); // YYYY-MM-DD
+  return f;
 }
+function monthKeyRiga(d = new Date()) {
+  const tz = "Europe/Riga";
+  const p = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz, year: "numeric", month: "2-digit"
+  }).formatToParts(d);
+  const obj = Object.fromEntries(p.map(x => [x.type, x.value]));
+  return `${obj.year}-${obj.month}`; // YYYY-MM
+}
+function getPlanLimits(plan) {
+  if ((plan || "").toLowerCase() === "pro") {
+    return { plan: "pro", dailyLimit: PRO_DAILY, monthlyLimit: PRO_MONTHLY };
+  }
+  return { plan: "basic", dailyLimit: BASIC_DAILY, monthlyLimit: 0 };
+}
+function getUserUsage(userId, planHeader) {
+  const limits = getPlanLimits(planHeader);
+  const today = todayKeyRiga();
+  const mKey = monthKeyRiga();
+  if (!usage.has(userId)) {
+    usage.set(userId, {
+      plan: limits.plan,
+      daily:   { dayKey: today, used: 0, graceUsed: 0 },
+      monthly: { monthKey: mKey, used: 0 }
+    });
+  }
+  const u = usage.get(userId);
 
+  // ja plāns headerī mainīts — sinhronizē
+  u.plan = limits.plan;
+
+  // dienas reset
+  if (u.daily.dayKey !== today) {
+    u.daily.dayKey = today;
+    u.daily.used = 0;
+    u.daily.graceUsed = 0;
+  }
+  // mēneša reset (tikai Pro)
+  if (u.monthly.monthKey !== mKey) {
+    u.monthly.monthKey = mKey;
+    u.monthly.used = 0;
+  }
+  return { u, limits };
+}
 function toRigaISO(d) {
-  // Drošības “guards”
-  if (!(d instanceof Date)) d = new Date(d);
-  if (isNaN(d?.getTime?.())) d = new Date();
-
   const tz = "Europe/Riga";
   const f = new Intl.DateTimeFormat("en-GB", {
-    timeZone: tz,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hour12: false
+    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
   }).formatToParts(d);
   const parts = Object.fromEntries(f.map(p => [p.type, p.value]));
   const local = Date.parse(`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}Z`);
@@ -57,258 +99,82 @@ function toRigaISO(d) {
   const mm = String(abs % 60).padStart(2, "0");
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${sign}${hh}:${mm}`;
 }
-
-function rigaOffsetMinutes(date = new Date()) {
-  const iso = toRigaISO(date); // "YYYY-MM-DDTHH:MM:SS+HH:MM"
-  const m = iso.match(/[+-]\d{2}:\d{2}$/);
-  if (!m) return 0;
-  const [h, min] = m[0].split(":");
-  const sign = h.startsWith("-") ? -1 : 1;
-  const hh = Math.abs(parseInt(h, 10));
-  const mm = parseInt(min, 10);
-  return sign * (hh * 60 + mm);
+function guessMime(filename) {
+  const f = (filename || "").toLowerCase();
+  if (f.endsWith(".m4a") || f.endsWith(".mp4")) return "audio/mp4";
+  if (f.endsWith(".mp3") || f.endsWith(".mpga")) return "audio/mpeg";
+  if (f.endsWith(".wav")) return "audio/wav";
+  if (f.endsWith(".webm")) return "audio/webm";
+  return "application/octet-stream";
 }
 
-function rigaMidnightResetISO() {
-  // Nākamā vietējā pusnakts (stabils aprēķins)
-  const now = new Date();
-  const offMin = rigaOffsetMinutes(now);
-  const localMs = now.getTime() + offMin * 60000;
-  const local = new Date(localMs);
-  const next = new Date(local);
-  next.setHours(24, 0, 0, 0);
-  const backUtc = new Date(next.getTime() - offMin * 60000);
-  return toRigaISO(backUtc);
-}
-
-function rigaDayKey(date = new Date()) {
-  const tz = "Europe/Riga";
-  const f = new Intl.DateTimeFormat("en-GB", {
-    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit"
-  }).formatToParts(date);
-  const parts = Object.fromEntries(f.map(p => [p.type, p.value]));
-  return `${parts.year}${parts.month}${parts.day}`;
-}
-
-function rigaMonthKey(date = new Date()) {
-  const tz = "Europe/Riga";
-  const y = new Intl.DateTimeFormat("en-GB",{timeZone: tz,year:"numeric"}).format(date);
-  const m = new Intl.DateTimeFormat("en-GB",{timeZone: tz,month:"2-digit"}).format(date);
-  return `${y}${m}`;
-}
-
-function nextMonthResetISO() {
-  // 1. nākamā mēneša 1. diena 00:00 (Rīgas laikā)
-  const now = new Date();
-  const offMin = rigaOffsetMinutes(now);
-  const localMs = now.getTime() + offMin * 60000;
-  const local = new Date(localMs);
-  const next = new Date(local);
-  next.setMonth(local.getMonth() + 1, 1);
-  next.setHours(0,0,0,0);
-  const backUtc = new Date(next.getTime() - offMin * 60000);
-  return toRigaISO(backUtc);
-}
-
-function wordCount(t) { return (t?.trim()?.match(/\p{L}+/gu) || []).length; }
-function charCount(t) { return (t || "").trim().replace(/\s+/g, "").length; }
-
-// Nelielas LV normalizācijas pirms parsēšanas
-function normalizeLvTranscript(t) {
-  if (!t) return t;
-  let s = t.toLowerCase();
-
-  // biežākās kļūdas
-  s = s.replace(/\breit\b/g, "rīt")
-       .replace(/\bpulkstenis\b/g, "pulksten")
-       .replace(/\bnullī\b/g, "nulles");
-
-  // “divpadsmitos” heuristika:
-  const hasNight = /\bnakt(ī|i)\b/.test(s);
-  if (/\bdivpadsmitos\b/.test(s) && !/\b:\d{2}\b/.test(s)) {
-    if (hasNight) s = s.replace(/\bdivpadsmitos\b/g, "00:00");
-    else s = s.replace(/\bdivpadsmitos\b/g, "12:00");
-  }
-  return s;
-}
-
-// ---------------- LV parser prompt ----------------
+/* ===== Deterministiskais LV parsētājs (tavs teksts) ===== */
 const SYSTEM_PROMPT = `Tu esi deterministisks latviešu dabiskās valodas parsētājs, kas no īsa teikuma izvada TIKAI TĪRU JSON vienā no trim formām: calendar, reminder vai shopping. Atbilde bez skaidrojumiem, bez teksta ārpus JSON. Temperatūra = 0.
 
 Globālie noteikumi
 - Laika josla vienmēr: Europe/Riga (sezonāli +02:00 vai +03:00).
 - Laika zīmogiem lieto ISO-8601: YYYY-MM-DDTHH:MM:SS+ZZ:ZZ.
 - Pieņem 12h un 24h pierakstus: 9, 09:30, 9am/pm.
-- Naturālie apzīmējumi:
-  - no rīta → 09:00, pusdienlaikā → 12:00, pēcpusdienā → 15:00, vakarā → 19:00, naktī → 22:00.
-  - Konflikts (piem., “18:00 no rīta”) → diennakts daļa ir prioritāte (tātad 09:00).
-  - pusdeviņos → 08:30.
-- Ilgumi: “1h”, “1.5h”, “45 min”, “2 stundas 30 min” → end = start + ilgums.
+- Naturālie apzīmējumi: no rīta=09:00, pusdienlaikā=12:00, pēcpusdienā=15:00, vakarā=19:00, naktī=22:00. Konflikts → diennakts daļa ir prioritāte. "pusdeviņos"=08:30.
+- Ilgumi: “1h”, “1.5h”, “45 min” → end = start + ilgums.
 - Intervāli: “no 9 līdz 11” → start=09:00, end=11:00.
 - Nedēļas dienas: “nākamajā pirmdienā” = tuvākā nākotnes pirmdiena.
-- Teksta normalizācija: vārdi/uzvārdi, zīmoli ar lielo sākumburtu (Jānis, Apple, Rimi). Izlabo acīmredzamas atpazīšanas kļūdas.
-- Apraksts īss un lietišķs (bez “rīt”, “šodien”).
-- Valoda: atgriez lang (lv, ru, en, ...).
+- Normalizē vārdus/brandus ar lielo sākumburtu; izlabo atpazīšanas kļūdas.
+- Apraksts īss un lietišķs; valoda -> lang (lv, en, ...).
 
 Laika enkuri
-- currentTime – pašreizējais ISO zīmogs Europe/Riga.
-- tomorrowExample – rītdienas datums tajā pašā kalendārā, ISO formā.
+- currentTime – pašreizējais ISO Europe/Riga.
+- tomorrowExample – rītdienas datums 00:00 Europe/Riga.
 
 Speciālie aizvietojumi:
-- “šodien” → izmanto currentTime datumu.
-- “rīt / rītdien” → izmanto tieši tomorrowExample.
+- “šodien” → currentTime datums.
+- “rīt/rītdien” → tomorrowExample.
 
-Validācija
-- Ja iegūtais start < currentTime → palielini gadu +1, līdz start >= currentTime.
+Validācijas loģika
+- Ja start < currentTime → palielini gadu par +1 līdz start ≥ currentTime.
 - Ja nav beigu laika → end = start + 1h.
-- Vienmēr derīgs ISO ar +02:00 vai +03:00.
 
 Klasifikācija
-- “atgādini”, “atgādinājums”, “neaizmirsti”, “remind”, “reminder” → type="reminder".
-  - Ar laiku/datumu → hasTime=true, citādi false.
-- “nopirkt”, “veikalā”, “pirkumu saraksts”, “shopping”, “iegādāties” → type="shopping".
-- Pretējā gadījumā type="calendar".
+- “atgādini”, “reminder” → type="reminder" (+ hasTime).
+- “nopirkt”, “shopping” → type="shopping".
+- Citādi → type="calendar".
 
-Izvades shēmas
-KALENDĀRS
-{ "type": "calendar", "lang": "lv", "start": "YYYY-MM-DDTHH:MM:SS+ZZ:ZZ", "end": "YYYY-MM-DDTHH:MM:SS+ZZ:ZZ", "description": "Teksts" }
-ATGĀDINĀJUMS
-{ "type": "reminder", "lang": "lv", "start": "YYYY-MM-DDTHH:MM:SS+ZZ:ZZ", "description": "Uzdevums", "hasTime": true }
-PIRKUMU SARAKSTS
-{ "type": "shopping", "lang": "lv", "items": "piens, maize, olas", "description": "Pirkumu saraksts" }
+Izvades shēmas:
+{ "type":"calendar","lang":"lv","start":"...","end":"...","description":"..." }
+{ "type":"reminder","lang":"lv","start":"...","description":"...","hasTime":true }
+{ "type":"shopping","lang":"lv","items":"piens, maize, olas","description":"Pirkumu saraksts" }
 
 Atgriez tikai vienu no formām.`;
 
-// -------------- In-memory usage store (demo/testam) --------------
-/**
- * usage = {
- *   [userId]: {
- *      dayKey: "YYYYMMDD",
- *      dailyUsed: number,
- *      dailyUsedGrace: number,
- *      monthKey: "YYYYMM",
- *      monthlyUsed: number
- *   }
- * }
- */
-const usage = Object.create(null);
-
-function getPlanFor(userId, forcedPlan) {
-  const plan = (forcedPlan || "").toLowerCase() === "pro" ? "pro" : "basic";
-  return plan === "pro"
-    ? { name: "pro", dailyLimit: PRO_DAILY, monthlyLimit: PRO_MONTHLY }
-    : { name: "basic", dailyLimit: BASIC_DAILY, monthlyLimit: null };
-}
-
-function initUsageFor(userId) {
-  const now = new Date();
-  const dayKey = rigaDayKey(now);
-  const monthKey = rigaMonthKey(now);
-
-  if (!usage[userId]) {
-    usage[userId] = { dayKey, dailyUsed: 0, dailyUsedGrace: 0, monthKey, monthlyUsed: 0 };
-    return;
-  }
-  if (usage[userId].dayKey !== dayKey) {
-    usage[userId].dayKey = dayKey;
-    usage[userId].dailyUsed = 0;
-    usage[userId].dailyUsedGrace = 0;
-  }
-  if (usage[userId].monthKey !== monthKey) {
-    usage[userId].monthKey = monthKey;
-    usage[userId].monthlyUsed = 0;
-  }
-}
-
-function canConsume(userId, plan) {
-  initUsageFor(userId);
-  const u = usage[userId];
-
-  if (plan.name === "pro" && plan.monthlyLimit != null) {
-    if (u.monthlyUsed >= plan.monthlyLimit) return { ok: false, reason: "monthly_quota_exceeded" };
-    if (u.dailyUsed >= plan.dailyLimit && u.monthlyUsed < plan.monthlyLimit) {
-      return { ok: true, softDailyExceeded: true };
-    }
-  }
-
-  const effectiveDailyLimit = plan.dailyLimit + GRACE_DAILY; // iekšējais “grace”
-  if (u.dailyUsed >= effectiveDailyLimit) {
-    return { ok: false, reason: "daily_quota_exceeded" };
-  }
-  return { ok: true };
-}
-
-function consume(userId, plan) {
-  initUsageFor(userId);
-  const u = usage[userId];
-  u.dailyUsed += 1;
-  if (plan.name === "pro" && plan.monthlyLimit != null) u.monthlyUsed += 1;
-}
-
-function quotaPayload(userId, plan) {
-  initUsageFor(userId);
-  const dailyReset = rigaMidnightResetISO();
-
-  const dailyRemaining = Math.max(0, plan.dailyLimit - usage[userId].dailyUsed);
-  const payload = {
-    plan: plan.name,
-    dailyLimit: plan.dailyLimit,
-    dailyUsed: usage[userId].dailyUsed,
-    dailyRemaining,
-    dailyReset
-  };
-
-  if (plan.monthlyLimit != null) {
-    const monthlyRemaining = Math.max(0, plan.monthlyLimit - usage[userId].monthlyUsed);
-    payload.monthlyLimit = plan.monthlyLimit;
-    payload.monthlyUsed = usage[userId].monthlyUsed;
-    payload.monthlyRemaining = monthlyRemaining;
-    payload.monthlyReset = nextMonthResetISO();
-  }
-
-  return payload;
-}
-
-// -------------- Health --------------
+/* ===== Healthcheck ===== */
 app.get("/", (_req, res) => res.json({ ok: true }));
 
-app.get("/health", async (_req, res) => {
-  try {
-    const ping = toRigaISO(new Date());
-    return res.json({ ok: true, time: ping, model: "gpt-4o-mini-transcribe / gpt-4.1-mini" });
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: String(e) });
-  }
-});
-
-// -------------- QUOTA --------------
+/* ===== /quota (publisks GET) ===== */
 app.get("/quota", (req, res) => {
-  try {
-    const userId = String(req.headers["x-user-id"] || "anon");
-    const forcedPlan = String(req.headers["x-plan"] || "");
-    const plan = getPlanFor(userId, forcedPlan);
-    initUsageFor(userId);
-    return res.json(quotaPayload(userId, plan));
-  } catch (e) {
-    console.error("quota_failed:", e);
-    // droša pagaidu atbilde, lai app nesaņem 500
-    return res.status(200).json({
-      plan: "basic",
-      dailyLimit: BASIC_DAILY,
-      dailyUsed: 0,
-      dailyRemaining: BASIC_DAILY,
-      dailyReset: rigaMidnightResetISO()
-    });
+  const userId = req.header("X-User-Id") || "anon";
+  const planHdr = req.header("X-Plan") || "basic";
+  const { u, limits } = getUserUsage(userId, planHdr);
+
+  const dailyRemaining = Math.max(0, limits.dailyLimit - u.daily.used);
+  const out = {
+    plan: limits.plan,
+    dailyLimit: limits.dailyLimit,
+    dailyUsed: u.daily.used,
+    dailyRemaining,
+    dailyGraceLimit: GRACE_DAILY,
+    dailyGraceUsed: u.daily.graceUsed,
+    dailyReset: toRigaISO(new Date(new Date().setHours(0,0,0,0) + 24*3600*1000)),
+  };
+  if (limits.plan === "pro") {
+    out.monthlyLimit = limits.monthlyLimit;
+    out.monthlyUsed = u.monthly.used;
+    out.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
   }
+  return res.json(out);
 });
 
-// -------------- INGEST (multipart form-data: file=) --------------
+/* ===== Galvenais: POST /ingest-audio ===== */
 app.post("/ingest-audio", async (req, res) => {
-  const requestId = String(req.headers["x-request-id"] || "");
-  const userId = String(req.headers["x-user-id"] || "anon");
-  const forcedPlan = String(req.headers["x-plan"] || "");
-  const plan = getPlanFor(userId, forcedPlan);
-
   try {
     // Auth
     if (APP_BEARER_TOKEN) {
@@ -318,18 +184,20 @@ app.post("/ingest-audio", async (req, res) => {
       }
     }
 
-    // QUOTA gate (pirms procesa)
-    const gate = canConsume(userId, plan);
-    if (!gate.ok) {
-      if (gate.reason === "daily_quota_exceeded") {
-        return res.status(429).json({ error: "daily_quota_exceeded", ...quotaPayload(userId, plan) });
-      }
-      if (gate.reason === "monthly_quota_exceeded") {
-        return res.status(429).json({ error: "monthly_quota_exceeded", ...quotaPayload(userId, plan) });
-      }
+    // Identitāte & plāns kvotām
+    const userId = req.header("X-User-Id") || "anon";
+    const planHdr = req.header("X-Plan") || "basic";
+    const { u, limits } = getUserUsage(userId, planHdr);
+
+    // pārbaude pirms apstrādes
+    if (u.daily.used >= limits.dailyLimit) {
+      return res.status(429).json({ error: "quota_exceeded", plan: limits.plan });
+    }
+    if (limits.plan === "pro" && u.monthly.used >= limits.monthlyLimit) {
+      return res.status(429).json({ error: "monthly_quota_exceeded", plan: limits.plan });
     }
 
-    // Parse multipart
+    // Multipart
     const fields = {};
     let fileBuf = Buffer.alloc(0);
     let filename = "audio.m4a";
@@ -350,61 +218,39 @@ app.post("/ingest-audio", async (req, res) => {
     });
 
     if (!fileBuf.length) return res.status(400).json({ error: "file_missing" });
-    if (fileBuf.length < 2 * 1024) return res.status(400).json({ error: "file_too_small" });
 
-    // === Client VAD telemetrija (no app) ===
-    const vadActiveSeconds = parseFloat(fields.vadActiveSeconds || "0");
-    const recordingDurationSeconds = parseFloat(fields.recordingDurationSeconds || "0");
-    const MIN_ACTIVE_SPEECH_SEC = 0.8;
-    const MIN_ACTIVE_RATIO = 0.20;
+    // Klienta VAD telemetrija
+    const vadActiveSeconds = Number(fields.vadActiveSeconds || 0);
+    const recordingDurationSeconds = Number(fields.recordingDurationSeconds || 0);
+    const langHint = (req.header("X-Lang") || fields.lang || "lv").toLowerCase();
 
-    if (recordingDurationSeconds > 0) {
-      const ratio = vadActiveSeconds / recordingDurationSeconds;
-      const vadOk = vadActiveSeconds >= MIN_ACTIVE_SPEECH_SEC && ratio >= MIN_ACTIVE_RATIO;
-      if (!vadOk) {
-        return res.status(422).json({
-          error: "no_speech_detected",
-          reason: "client_vad_filter",
-          vadActiveSeconds,
-          recordingDurationSeconds
-        });
-      }
-    }
+    // Ļaujam “tukšos” iekrist GRACE buferī (neskaitām pret limitu)
+    const PASSES_MIN_SPEECH = vadActiveSeconds >= 0.5;
 
-    // Transcribe (ar valodas mājienu)
-    const userLang = String(fields.lang || req.headers["x-lang"] || "").toLowerCase();
-    const langHint = (userLang === "lv" || userLang === "lav" || userLang === "latvian") ? "lv" : undefined;
-
-    const mime = guessMime(filename);
-    const file = await toFile(fileBuf, filename, { type: mime });
-
+    // Transcribe
+    const file = await toFile(fileBuf, filename, { type: guessMime(filename) });
     const tr = await openai.audio.transcriptions.create({
       model: "gpt-4o-mini-transcribe",
-      file,
-      ...(langHint ? { language: langHint } : {})
+      file
     });
 
-    const rawTranscript = (tr?.text || "").trim();
-    const transcript = normalizeLvTranscript(rawTranscript);
-
-    // Teksta validācija (mīkstāka)
-    const wc = wordCount(transcript);
-    const cc = charCount(transcript);
-    const accept = (wc >= 2) || (wc >= 1 && cc >= 5);
-    if (!accept) {
+    // Ja arī transkripts tukšs – metam 422 un, ja pieejams, izmantojam GRACE
+    const transcript = (tr.text || "").trim();
+    if (!PASSES_MIN_SPEECH || transcript.length < 2) {
+      if (u.daily.graceUsed < GRACE_DAILY) {
+        u.daily.graceUsed += 1; // “ne-soda” mēģinājums
+      }
       return res.status(422).json({ error: "no_speech_detected", raw_transcript: transcript });
     }
 
-    // Enkuri parserim
+    // Laika enkuri
     const nowISO = fields.currentTime || toRigaISO(new Date());
-    const tomorrow = new Date(Date.now() + 24 * 3600 * 1000);
-    const tomorrowISO = fields.tomorrowExample || toRigaISO(new Date(
-      tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate(), 0, 0, 0
-    ));
+    const tmr = new Date(Date.now() + 24 * 3600 * 1000);
+    const tomorrowISO = fields.tomorrowExample || toRigaISO(new Date(tmr.getFullYear(), tmr.getMonth(), tmr.getDate(), 0, 0, 0));
 
     const userMsg = `currentTime=${nowISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${transcript}`;
 
-    // JSON analīze
+    // Parsēšana uz JSON
     const chat = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
       temperature: 0,
@@ -419,21 +265,29 @@ app.post("/ingest-audio", async (req, res) => {
     try {
       out = JSON.parse(chat.choices?.[0]?.message?.content || "{}");
     } catch {
-      out = { type: "reminder", lang: "lv", start: nowISO, description: transcript, hasTime: false };
+      out = { type: "reminder", lang: langHint, start: nowISO, description: transcript, hasTime: false };
     }
+
     out.raw_transcript = transcript;
 
-    // Derīgs rezultāts → skaitām kvotu
-    consume(userId, plan);
+    // ŠIS ieraksts bija derīgs → skaitām kvotu
+    u.daily.used += 1;
+    if (limits.plan === "pro") u.monthly.used += 1;
 
-    // Logs
-    console.log(JSON.stringify({
-      t: new Date().toISOString(),
-      rid: requestId, userId, route: "/ingest-audio",
-      bytes: fileBuf.length, wc, cc, plan: plan.name,
-      usedDaily: usage[userId].dailyUsed, usedMonthly: usage[userId].monthlyUsed,
-      vadActiveSeconds, recordingDurationSeconds, langHint
-    }));
+    // Pievienojam kvotu statusu atbildē (noder UI)
+    out.quota = {
+      plan: limits.plan,
+      dailyLimit: limits.dailyLimit,
+      dailyUsed: u.daily.used,
+      dailyRemaining: Math.max(0, limits.dailyLimit - u.daily.used),
+      dailyGraceLimit: GRACE_DAILY,
+      dailyGraceUsed: u.daily.graceUsed
+    };
+    if (limits.plan === "pro") {
+      out.quota.monthlyLimit = limits.monthlyLimit;
+      out.quota.monthlyUsed = u.monthly.used;
+      out.quota.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
+    }
 
     return res.json(out);
 
@@ -443,5 +297,5 @@ app.post("/ingest-audio", async (req, res) => {
   }
 });
 
-// Start
+/* ===== Start ===== */
 app.listen(PORT, () => console.log("Voice agent running on", PORT));
