@@ -1,103 +1,62 @@
+import express from "express";
+import Busboy from "busboy";
+import OpenAI from "openai";
+import { toFile } from "openai/uploads";
+
 /* ===== ENV ===== */
 const PORT = process.env.PORT || 3000;
 const APP_BEARER_TOKEN = process.env.APP_BEARER_TOKEN || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
 
-/* ===== PLANS (fiksēta konfigurācija kodā) ===== */
-const plans = {
-  basic: { dailyLimit: 5,      monthlyLimit: null },
-  pro:   { dailyLimit: 999999, monthlyLimit: 300 },   // ← Pro: nav dienas limita (tikai 300/mēn)
-  dev:   { dailyLimit: 999999, monthlyLimit: 999999 }
-};
-
-// “kļūdu buferis” – cik “tukšus/failed” mēģinājumus atļaujam dienā papildus limitam
-const GRACE_DAILY = 2;
-
-if (!OPENAI_API_KEY) {
-  console.error("Missing OPENAI_API_KEY env var");
-  process.exit(1);
-}
-
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+
+/* ===== APP SETUP ===== */
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
-/* ===== In-memory kvotu stāvoklis (vienkārši; pietiek MVP) =====
-   Struktūra:
+/* ===== PLANS (fiksēta konfigurācija kodā) ===== */
+const plans = {
+  basic: { dailyLimit: 5,      monthlyLimit: null },
+  pro:   { dailyLimit: 999999, monthlyLimit: 300 },   // Pro: nav dienas limita, tikai 300/mēn
+  dev:   { dailyLimit: 999999, monthlyLimit: 999999 }
+};
+const GRACE_DAILY = 2; // “kļūdu buferis” – ne-soda mēģinājumi dienā
+
+/* ===== In-memory kvotu stāvoklis =====
    usage[userId] = {
-     plan: "basic"|"pro",
+     plan: "basic"|"pro"|"dev",
      daily: { dayKey: "YYYY-MM-DD", used: number, graceUsed: number },
-     monthly: { monthKey: "YYYY-MM", used: number }   // tikai Pro
+     monthly: { monthKey: "YYYY-MM", used: number }
    }
 */
 const usage = new Map();
 
-/* ===== Palīgfunkcijas ===== */
+/* ===== Helpers: laiks, mime, plāni ===== */
 function todayKeyRiga(d = new Date()) {
   const tz = "Europe/Riga";
-  const f = new Intl.DateTimeFormat("en-CA", { timeZone: tz, dateStyle: "short" })
-    .format(d); // YYYY-MM-DD
-  return f;
+  return new Intl.DateTimeFormat("en-CA", { timeZone: tz, dateStyle: "short" }).format(d);
 }
 function monthKeyRiga(d = new Date()) {
   const tz = "Europe/Riga";
-  const p = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz, year: "numeric", month: "2-digit"
-  }).formatToParts(d);
-  const obj = Object.fromEntries(p.map(x => [x.type, x.value]));
-  return `${obj.year}-${obj.month}`; // YYYY-MM
-}
-function getPlanLimits(plan) {
-  if ((plan || "").toLowerCase() === "pro") {
-    return { plan: "pro", dailyLimit: PRO_DAILY, monthlyLimit: PRO_MONTHLY };
-  }
-  return { plan: "basic", dailyLimit: BASIC_DAILY, monthlyLimit: 0 };
-}
-function getUserUsage(userId, planHeader) {
-  const limits = getPlanLimits(planHeader);
-  const today = todayKeyRiga();
-  const mKey = monthKeyRiga();
-  if (!usage.has(userId)) {
-    usage.set(userId, {
-      plan: limits.plan,
-      daily:   { dayKey: today, used: 0, graceUsed: 0 },
-      monthly: { monthKey: mKey, used: 0 }
-    });
-  }
-  const u = usage.get(userId);
-
-  // ja plāns headerī mainīts — sinhronizē
-  u.plan = limits.plan;
-
-  // dienas reset
-  if (u.daily.dayKey !== today) {
-    u.daily.dayKey = today;
-    u.daily.used = 0;
-    u.daily.graceUsed = 0;
-  }
-  // mēneša reset (tikai Pro)
-  if (u.monthly.monthKey !== mKey) {
-    u.monthly.monthKey = mKey;
-    u.monthly.used = 0;
-  }
-  return { u, limits };
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit" }).formatToParts(d);
+  const o = Object.fromEntries(parts.map(p => [p.type, p.value]));
+  return `${o.year}-${o.month}`;
 }
 function toRigaISO(d) {
   const tz = "Europe/Riga";
-  const f = new Intl.DateTimeFormat("en-GB", {
+  const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
   }).formatToParts(d);
-  const parts = Object.fromEntries(f.map(p => [p.type, p.value]));
-  const local = Date.parse(`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}Z`);
-  const utc = d.getTime();
-  const offsetMin = Math.round((local - utc) / 60000);
+  const o = Object.fromEntries(parts.map(p => [p.type, p.value]));
+  const local = Date.parse(`${o.year}-${o.month}-${o.day}T${o.hour}:${o.minute}:${o.second}Z`);
+  const offsetMin = Math.round((local - d.getTime()) / 60000);
   const sign = offsetMin >= 0 ? "+" : "-";
   const abs = Math.abs(offsetMin);
   const hh = String(Math.floor(abs / 60)).padStart(2, "0");
   const mm = String(abs % 60).padStart(2, "0");
-  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${sign}${hh}:${mm}`;
+  return `${o.year}-${o.month}-${o.day}T${o.hour}:${o.minute}:${o.second}${sign}${hh}:${mm}`;
 }
 function guessMime(filename) {
   const f = (filename || "").toLowerCase();
@@ -107,8 +66,94 @@ function guessMime(filename) {
   if (f.endsWith(".webm")) return "audio/webm";
   return "application/octet-stream";
 }
+function getPlanLimits(planHeader) {
+  const p = (planHeader || "").toLowerCase();
+  if (p === "pro") return { plan: "pro", dailyLimit: plans.pro.dailyLimit, monthlyLimit: plans.pro.monthlyLimit };
+  if (p === "dev") return { plan: "dev", dailyLimit: plans.dev.dailyLimit, monthlyLimit: plans.dev.monthlyLimit };
+  return { plan: "basic", dailyLimit: plans.basic.dailyLimit, monthlyLimit: plans.basic.monthlyLimit ?? 0 };
+}
+function getUserUsage(userId, planHeader) {
+  const limits = getPlanLimits(planHeader);
+  const today = todayKeyRiga();
+  const mKey = monthKeyRiga();
+  if (!usage.has(userId)) {
+    usage.set(userId, {
+      plan: limits.plan,
+      daily: { dayKey: today, used: 0, graceUsed: 0 },
+      monthly: { monthKey: mKey, used: 0 }
+    });
+  }
+  const u = usage.get(userId);
+  u.plan = limits.plan;
+  if (u.daily.dayKey !== today) { u.daily.dayKey = today; u.daily.used = 0; u.daily.graceUsed = 0; }
+  if (u.monthly.monthKey !== mKey) { u.monthly.monthKey = mKey; u.monthly.used = 0; }
+  return { u, limits };
+}
 
-/* ===== Deterministiskais LV parsētājs (tavs teksts) ===== */
+/* ===== Teksta kvalitātes vārti (ātrā pārbaude + normalizācija) ===== */
+// Biežākās LV korekcijas (minimāla normalizācija bez modeļa)
+const LV_FIXES = [
+  [/^\s*reit\b/gi, "rīt"],
+  [/\breit\b/gi, "rīt"],
+  [/\brit\b/gi, "rīt"],
+  [/\bpulkstenis\b/gi, "pulksten"],
+  [/\btikšanas\b/gi, "tikšanās"],
+  [/\btikšanos\b/gi, "tikšanās"],
+  [/\bnullei\b/gi, "nullē"],
+  [/\bnulli\b/gi, "nulli"],
+  [/\bdesmitos\b/gi, "desmitos"],
+  [/\bdivpadsmitos\b/gi, "divpadsmitos"]
+];
+// “pūķa astes” – burtu atkārtojumu nogriešana (helloooo → helloo)
+function squeezeRepeats(s, max = 3) {
+  return s.replace(/(.)\1{3,}/g, (m, ch) => ch.repeat(max));
+}
+function normalizeTranscript(text, langHint) {
+  let t = (text || "").replace(/\s+/g, " ").trim();
+  t = squeezeRepeats(t);
+  if ((langHint || "lv").startsWith("lv")) {
+    LV_FIXES.forEach(([re, rep]) => { t = t.replace(re, rep); });
+    // ja sākas ar mazajiem, paceļam pirmo burtu
+    if (t.length > 1) t = t[0].toUpperCase() + t.slice(1);
+  }
+  return t;
+}
+// Heiristiska kvalitātes novērtēšana (bez papildu API izmaksām)
+function qualityScore(text) {
+  const t = (text || "").trim();
+  if (!t) return 0;
+  const letters = (t.match(/[A-Za-zĀ-ž]/g) || []).length;
+  const digits = (t.match(/\d/g) || []).length;
+  const spaces = (t.match(/\s/g) || []).length;
+  const symbols = t.length - letters - digits - spaces;
+  const words = t.split(/\s+/).filter(w => w.length > 0);
+  const longWords = words.filter(w => w.length >= 3).length;
+
+  // pārmērīgas simbolu virknes = zema kvalitāte
+  if (symbols / Math.max(1, t.length) > 0.25) return 0.2;
+  // tikai 1 īss vārds → vāja
+  if (words.length < 2) return 0.2;
+  // nav pietiekami “vārdu-līdzīgu”
+  if (longWords < 1) return 0.25;
+
+  // burti vs kopgarums
+  const letterRatio = letters / Math.max(1, t.length);
+  // “vidējais vārda garums”
+  const avgLen = t.length / Math.max(1, words.length);
+
+  let score = 0.5;
+  if (letterRatio > 0.65) score += 0.2;
+  if (avgLen >= 3.5 && avgLen <= 12) score += 0.2;
+  if (digits === 0) score += 0.05;
+  if (!/[A-Za-zĀ-ž]/.test(t)) score -= 0.3; // nav latīņu/latviešu burtu
+  // pārlieku gari bez atstarpēm
+  if (avgLen > 18) score -= 0.2;
+
+  // nogriežam [0..1]
+  return Math.max(0, Math.min(1, score));
+}
+
+/* ===== Deterministiskais LV parsētājs ===== */
 const SYSTEM_PROMPT = `Tu esi deterministisks latviešu dabiskās valodas parsētājs, kas no īsa teikuma izvada TIKAI TĪRU JSON vienā no trim formām: calendar, reminder vai shopping. Atbilde bez skaidrojumiem, bez teksta ārpus JSON. Temperatūra = 0.
 
 Globālie noteikumi
@@ -149,18 +194,20 @@ Atgriez tikai vienu no formām.`;
 /* ===== Healthcheck ===== */
 app.get("/", (_req, res) => res.json({ ok: true }));
 
-/* ===== /quota (publisks GET) ===== */
+/* ===== /quota ===== */
+const normalizeDaily = (n) => (n >= 999999 ? null : n);
+
 app.get("/quota", (req, res) => {
   const userId = req.header("X-User-Id") || "anon";
   const planHdr = req.header("X-Plan") || "basic";
   const { u, limits } = getUserUsage(userId, planHdr);
 
-  const dailyRemaining = Math.max(0, limits.dailyLimit - u.daily.used);
+  const dailyLimitNorm = normalizeDaily(limits.dailyLimit);
   const out = {
     plan: limits.plan,
-    dailyLimit: limits.dailyLimit,
+    dailyLimit: dailyLimitNorm,
     dailyUsed: u.daily.used,
-    dailyRemaining,
+    dailyRemaining: dailyLimitNorm === null ? null : Math.max(0, limits.dailyLimit - u.daily.used),
     dailyGraceLimit: GRACE_DAILY,
     dailyGraceUsed: u.daily.graceUsed,
     dailyReset: toRigaISO(new Date(new Date().setHours(0,0,0,0) + 24*3600*1000)),
@@ -173,7 +220,7 @@ app.get("/quota", (req, res) => {
   return res.json(out);
 });
 
-/* ===== Galvenais: POST /ingest-audio ===== */
+/* ===== POST /ingest-audio ===== */
 app.post("/ingest-audio", async (req, res) => {
   try {
     // Auth
@@ -187,9 +234,10 @@ app.post("/ingest-audio", async (req, res) => {
     // Identitāte & plāns kvotām
     const userId = req.header("X-User-Id") || "anon";
     const planHdr = req.header("X-Plan") || "basic";
+    const langHint = (req.header("X-Lang") || "lv").toLowerCase();
     const { u, limits } = getUserUsage(userId, planHdr);
 
-    // pārbaude pirms apstrādes
+    // Pārbaude pirms apstrādes
     if (u.daily.used >= limits.dailyLimit) {
       return res.status(429).json({ error: "quota_exceeded", plan: limits.plan });
     }
@@ -201,7 +249,6 @@ app.post("/ingest-audio", async (req, res) => {
     const fields = {};
     let fileBuf = Buffer.alloc(0);
     let filename = "audio.m4a";
-
     const bb = Busboy({ headers: req.headers, limits: { files: 1, fileSize: 8 * 1024 * 1024 } });
 
     await new Promise((resolve, reject) => {
@@ -222,25 +269,33 @@ app.post("/ingest-audio", async (req, res) => {
     // Klienta VAD telemetrija
     const vadActiveSeconds = Number(fields.vadActiveSeconds || 0);
     const recordingDurationSeconds = Number(fields.recordingDurationSeconds || 0);
-    const langHint = (req.header("X-Lang") || fields.lang || "lv").toLowerCase();
 
-    // Ļaujam “tukšos” iekrist GRACE buferī (neskaitām pret limitu)
-    const PASSES_MIN_SPEECH = vadActiveSeconds >= 0.5;
+    // Minimāla runas aktivitāte (pirms maksas transkripcijas)
+    if (vadActiveSeconds < 0.3 || recordingDurationSeconds < 0.6) {
+      if (u.daily.graceUsed < GRACE_DAILY) u.daily.graceUsed += 1;
+      return res.status(422).json({ error: "no_speech_detected_client", details: { vadActiveSeconds, recordingDurationSeconds } });
+    }
 
-    // Transcribe
+    // Transcribe (OpenAI)
     const file = await toFile(fileBuf, filename, { type: guessMime(filename) });
     const tr = await openai.audio.transcriptions.create({
       model: "gpt-4o-mini-transcribe",
       file
     });
 
-    // Ja arī transkripts tukšs – metam 422 un, ja pieejams, izmantojam GRACE
-    const transcript = (tr.text || "").trim();
-    if (!PASSES_MIN_SPEECH || transcript.length < 2) {
-      if (u.daily.graceUsed < GRACE_DAILY) {
-        u.daily.graceUsed += 1; // “ne-soda” mēģinājums
-      }
-      return res.status(422).json({ error: "no_speech_detected", raw_transcript: transcript });
+    // Normalizācija + kvalitātes pārbaude
+    const raw = (tr.text || "").trim();
+    const norm = normalizeTranscript(raw, langHint);
+    const score = qualityScore(norm);
+
+    if (norm.length < 2 || score < 0.35) {
+      if (u.daily.graceUsed < GRACE_DAILY) u.daily.graceUsed += 1;
+      return res.status(422).json({
+        error: "low_confidence_transcript",
+        score,
+        raw_transcript: raw,
+        normalized: norm
+      });
     }
 
     // Laika enkuri
@@ -248,7 +303,7 @@ app.post("/ingest-audio", async (req, res) => {
     const tmr = new Date(Date.now() + 24 * 3600 * 1000);
     const tomorrowISO = fields.tomorrowExample || toRigaISO(new Date(tmr.getFullYear(), tmr.getMonth(), tmr.getDate(), 0, 0, 0));
 
-    const userMsg = `currentTime=${nowISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${transcript}`;
+    const userMsg = `currentTime=${nowISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${norm}`;
 
     // Parsēšana uz JSON
     const chat = await openai.chat.completions.create({
@@ -265,21 +320,23 @@ app.post("/ingest-audio", async (req, res) => {
     try {
       out = JSON.parse(chat.choices?.[0]?.message?.content || "{}");
     } catch {
-      out = { type: "reminder", lang: langHint, start: nowISO, description: transcript, hasTime: false };
+      out = { type: "reminder", lang: langHint, start: nowISO, description: norm, hasTime: false };
     }
 
-    out.raw_transcript = transcript;
+    out.raw_transcript = raw;
+    out.normalized_transcript = norm;
+    out.confidence = score;
 
-    // ŠIS ieraksts bija derīgs → skaitām kvotu
+    // ŠIS ieraksts derīgs → skaitām kvotu
     u.daily.used += 1;
     if (limits.plan === "pro") u.monthly.used += 1;
 
-    // Pievienojam kvotu statusu atbildē (noder UI)
+    // Kvotu statuss atbildē
     out.quota = {
       plan: limits.plan,
-      dailyLimit: limits.dailyLimit,
+      dailyLimit: normalizeDaily(limits.dailyLimit),
       dailyUsed: u.daily.used,
-      dailyRemaining: Math.max(0, limits.dailyLimit - u.daily.used),
+      dailyRemaining: limits.dailyLimit >= 999999 ? null : Math.max(0, limits.dailyLimit - u.daily.used),
       dailyGraceLimit: GRACE_DAILY,
       dailyGraceUsed: u.daily.graceUsed
     };
