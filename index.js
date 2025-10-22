@@ -1,18 +1,18 @@
-import express from "express";
-import Busboy from "busboy";
-import OpenAI from "openai";
-import { toFile } from "openai/uploads";
-
 /* ===== ENV ===== */
 const PORT = process.env.PORT || 3000;
 const APP_BEARER_TOKEN = process.env.APP_BEARER_TOKEN || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
 
-// kvotu konfigurācija (no Railway Variables)
-const BASIC_DAILY   = Number(process.env.BASIC_DAILY   || 5);
-const PRO_DAILY     = Number(process.env.PRO_DAILY     || 10);
-const PRO_MONTHLY   = Number(process.env.PRO_MONTHLY   || 300);
-const GRACE_DAILY   = Number(process.env.GRACE_DAILY   || 2); // “kļūdu buferis”
+/* ===== PLANS (fiksēta konfigurācija kodā) ===== */
+const plans = {
+  basic: { dailyLimit: 5,      monthlyLimit: null },
+  pro:   { dailyLimit: 999999, monthlyLimit: 300 },   // ← Pro: nav dienas limita (tikai 300/mēn)
+  dev:   { dailyLimit: 999999, monthlyLimit: 999999 }
+};
+
+// “kļūdu buferis” – cik “tukšus/failed” mēģinājumus atļaujam dienā papildus limitam
+const GRACE_DAILY = 2;
 
 if (!OPENAI_API_KEY) {
   console.error("Missing OPENAI_API_KEY env var");
