@@ -317,7 +317,7 @@ Izvades shēmas:
 Atgriez tikai vienu no formām.`;
 
 /* ===== RATE LIMITING ===== */
-const rateLimit = require('express-rate-limit');
+import rateLimit from 'express-rate-limit';
 
 const limiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
