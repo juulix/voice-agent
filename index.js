@@ -2,6 +2,10 @@ import express from "express";
 import Busboy from "busboy";
 import OpenAI from "openai";
 import { toFile } from "openai/uploads";
+import client from "prom-client";
+import sqlite3 from "sqlite3";
+import path from "path";
+import * as Sentry from "@sentry/node";
 
 /* ===== ENV ===== */
 const PORT = process.env.PORT || 3000;
@@ -9,10 +13,82 @@ const APP_BEARER_TOKEN = process.env.APP_BEARER_TOKEN || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
 
+// Initialize Sentry
+if (process.env.SENTRY_DSN) {
+  Sentry.init({ 
+    dsn: process.env.SENTRY_DSN, 
+    tracesSampleRate: 0.1,
+    environment: process.env.NODE_ENV || "production"
+  });
+}
+
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+
+/* ===== DATABASE SETUP ===== */
+const dbPath = path.join(process.cwd(), 'quota.db');
+const db = new sqlite3.Database(dbPath);
+
+// Initialize quota tracking tables
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS quota_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    plan TEXT NOT NULL,
+    day_key TEXT NOT NULL,
+    month_key TEXT NOT NULL,
+    daily_used INTEGER DEFAULT 0,
+    daily_grace_used INTEGER DEFAULT 0,
+    monthly_used INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, day_key)
+  )`);
+});
+
+/* ===== PROMETHEUS METRICS ===== */
+const register = new client.Registry();
+client.collectDefaultMetrics({ register });
+
+const httpRequests = new client.Counter({
+  name: "http_requests_total",
+  help: "Total HTTP requests",
+  labelNames: ["method", "path", "status"]
+});
+
+const httpLatency = new client.Histogram({
+  name: "http_request_duration_ms",
+  help: "HTTP request duration (ms)",
+  labelNames: ["method", "path", "status"],
+  buckets: [50, 100, 200, 400, 800, 1500, 3000, 5000]
+});
+
+const audioProcessingTime = new client.Histogram({
+  name: "audio_processing_duration_ms",
+  help: "Audio processing duration (ms)",
+  labelNames: ["status"],
+  buckets: [1000, 2000, 5000, 10000, 15000, 30000]
+});
+
+const quotaUsage = new client.Counter({
+  name: "quota_usage_total",
+  help: "Total quota usage",
+  labelNames: ["plan", "type"]
+});
+
+register.registerMetric(httpRequests);
+register.registerMetric(httpLatency);
+register.registerMetric(audioProcessingTime);
+register.registerMetric(quotaUsage);
 
 /* ===== APP SETUP ===== */
 const app = express();
+
+// Sentry middleware
+if (process.env.SENTRY_DSN) {
+  app.use(Sentry.requestHandler());
+  app.use(Sentry.tracingHandler());
+}
+
 app.use(express.json({ limit: "10mb" }));
 
 /* ===== MIDDLEWARE ===== */
@@ -75,6 +151,22 @@ app.use((req, res, next) => {
   next();
 });
 
+// Prometheus metrics middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on("finish", () => {
+    const ms = Date.now() - start;
+    const labels = { 
+      method: req.method, 
+      path: req.route?.path || req.path, 
+      status: String(res.statusCode) 
+    };
+    httpRequests.inc(labels, 1);
+    httpLatency.observe(labels, ms);
+  });
+  next();
+});
+
 /* ===== PLANS (fiksēta konfigurācija kodā) ===== */
 const plans = {
   basic: { dailyLimit: 5,      monthlyLimit: null },
@@ -83,14 +175,7 @@ const plans = {
 };
 const GRACE_DAILY = 2; // “kļūdu buferis” – ne-soda mēģinājumi dienā
 
-/* ===== In-memory kvotu stāvoklis =====
-   usage[userId] = {
-     plan: "basic"|"pro"|"dev",
-     daily: { dayKey: "YYYY-MM-DD", used: number, graceUsed: number },
-     monthly: { monthKey: "YYYY-MM", used: number }
-   }
-*/
-const usage = new Map();
+/* ===== SQLite kvotu stāvoklis ===== */
 
 /* ===== Idempotency tracking =====
    idempotency[key] = {
@@ -151,22 +236,81 @@ function getPlanLimits(planHeader) {
   if (p === "dev") return { plan: "dev", dailyLimit: plans.dev.dailyLimit, monthlyLimit: plans.dev.monthlyLimit };
   return { plan: "basic", dailyLimit: plans.basic.dailyLimit, monthlyLimit: plans.basic.monthlyLimit ?? 0 };
 }
-function getUserUsage(userId, planHeader) {
+async function getUserUsage(userId, planHeader) {
   const limits = getPlanLimits(planHeader);
   const today = todayKeyRiga();
   const mKey = monthKeyRiga();
-  if (!usage.has(userId)) {
-    usage.set(userId, {
-      plan: limits.plan,
-      daily: { dayKey: today, used: 0, graceUsed: 0 },
-      monthly: { monthKey: mKey, used: 0 }
-    });
-  }
-  const u = usage.get(userId);
-  u.plan = limits.plan;
-  if (u.daily.dayKey !== today) { u.daily.dayKey = today; u.daily.used = 0; u.daily.graceUsed = 0; }
-  if (u.monthly.monthKey !== mKey) { u.monthly.monthKey = mKey; u.monthly.used = 0; }
-  return { u, limits };
+  
+  return new Promise((resolve, reject) => {
+    db.get(
+      `SELECT * FROM quota_usage WHERE user_id = ? AND day_key = ?`,
+      [userId, today],
+      (err, row) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        
+        if (!row) {
+          // Create new record
+          db.run(
+            `INSERT INTO quota_usage (user_id, plan, day_key, month_key, daily_used, daily_grace_used, monthly_used) 
+             VALUES (?, ?, ?, ?, 0, 0, 0)`,
+            [userId, limits.plan, today, mKey],
+            function(err) {
+              if (err) {
+                reject(err);
+                return;
+              }
+              resolve({
+                u: {
+                  plan: limits.plan,
+                  daily: { dayKey: today, used: 0, graceUsed: 0 },
+                  monthly: { monthKey: mKey, used: 0 }
+                },
+                limits
+              });
+            }
+          );
+        } else {
+          // Update plan if changed
+          if (row.plan !== limits.plan) {
+            db.run(
+              `UPDATE quota_usage SET plan = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND day_key = ?`,
+              [limits.plan, userId, today]
+            );
+          }
+          
+          resolve({
+            u: {
+              plan: limits.plan,
+              daily: { dayKey: row.day_key, used: row.daily_used, graceUsed: row.daily_grace_used },
+              monthly: { monthKey: row.month_key, used: row.monthly_used }
+            },
+            limits
+          });
+        }
+      }
+    );
+  });
+}
+
+async function updateQuotaUsage(userId, plan, dailyUsed, dailyGraceUsed, monthlyUsed) {
+  const today = todayKeyRiga();
+  const mKey = monthKeyRiga();
+  
+  return new Promise((resolve, reject) => {
+    db.run(
+      `UPDATE quota_usage 
+       SET daily_used = ?, daily_grace_used = ?, monthly_used = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = ? AND day_key = ?`,
+      [dailyUsed, dailyGraceUsed, monthlyUsed, userId, today],
+      function(err) {
+        if (err) reject(err);
+        else resolve();
+      }
+    );
+  });
 }
 
 /* ===== Teksta kvalitātes vārti (ātrā pārbaude + normalizācija) ===== */
@@ -370,34 +514,46 @@ app.get("/version", (req, res) => res.json({
   node: process.version
 }));
 
+app.get("/metrics", async (req, res) => {
+  res.set("Content-Type", register.contentType);
+  res.end(await register.metrics());
+});
+
 /* ===== /quota ===== */
 const normalizeDaily = (n) => (n >= 999999 ? null : n);
 
-app.get("/quota", (req, res) => {
-  const userId = req.header("X-User-Id") || "anon";
-  const planHdr = req.header("X-Plan") || "basic";
-  const { u, limits } = getUserUsage(userId, planHdr);
+app.get("/quota", async (req, res) => {
+  try {
+    const userId = req.header("X-User-Id") || "anon";
+    const planHdr = req.header("X-Plan") || "basic";
+    const { u, limits } = await getUserUsage(userId, planHdr);
 
-  const dailyLimitNorm = normalizeDaily(limits.dailyLimit);
-  const out = {
-    plan: limits.plan,
-    dailyLimit: dailyLimitNorm,
-    dailyUsed: u.daily.used,
-    dailyRemaining: dailyLimitNorm === null ? null : Math.max(0, limits.dailyLimit - u.daily.used),
-    dailyGraceLimit: GRACE_DAILY,
-    dailyGraceUsed: u.daily.graceUsed,
-    dailyReset: toRigaISO(new Date(new Date().setHours(0,0,0,0) + 24*3600*1000)),
-  };
-  if (limits.plan === "pro") {
-    out.monthlyLimit = limits.monthlyLimit;
-    out.monthlyUsed = u.monthly.used;
-    out.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
+    const dailyLimitNorm = normalizeDaily(limits.dailyLimit);
+    const out = {
+      plan: limits.plan,
+      dailyLimit: dailyLimitNorm,
+      dailyUsed: u.daily.used,
+      dailyRemaining: dailyLimitNorm === null ? null : Math.max(0, limits.dailyLimit - u.daily.used),
+      dailyGraceLimit: GRACE_DAILY,
+      dailyGraceUsed: u.daily.graceUsed,
+      dailyReset: toRigaISO(new Date(new Date().setHours(0,0,0,0) + 24*3600*1000)),
+      requestId: req.requestId
+    };
+    if (limits.plan === "pro") {
+      out.monthlyLimit = limits.monthlyLimit;
+      out.monthlyUsed = u.monthly.used;
+      out.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
+    }
+    return res.json(out);
+  } catch (error) {
+    console.error("Quota error:", error);
+    return res.status(500).json({ error: "quota_failed", requestId: req.requestId });
   }
-  return res.json(out);
 });
 
 /* ===== POST /ingest-audio ===== */
 app.post("/ingest-audio", async (req, res) => {
+  const processingStart = Date.now();
   try {
     // Auth
     if (APP_BEARER_TOKEN) {
@@ -428,7 +584,7 @@ app.post("/ingest-audio", async (req, res) => {
     const userId = req.header("X-User-Id") || "anon";
     const planHdr = req.header("X-Plan") || "basic";
     const langHint = (req.header("X-Lang") || "lv").toLowerCase();
-    const { u, limits } = getUserUsage(userId, planHdr);
+    const { u, limits } = await getUserUsage(userId, planHdr);
 
     // Pārbaude pirms apstrādes
     if (u.daily.used >= limits.dailyLimit) {
@@ -591,6 +747,15 @@ app.post("/ingest-audio", async (req, res) => {
     // ŠIS ieraksts derīgs → skaitām kvotu
     u.daily.used += 1;
     if (limits.plan === "pro") u.monthly.used += 1;
+    
+    // Update quota in database
+    await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed, u.monthly.used);
+    
+    // Track quota usage metrics
+    quotaUsage.inc({ plan: limits.plan, type: "daily" }, 1);
+    if (limits.plan === "pro") {
+      quotaUsage.inc({ plan: limits.plan, type: "monthly" }, 1);
+    }
 
     // Kvotu statuss atbildē
     out.quota = {
@@ -619,13 +784,39 @@ app.post("/ingest-audio", async (req, res) => {
       });
     }
 
+    // Track successful processing time
+    const processingTime = Date.now() - processingStart;
+    audioProcessingTime.observe({ status: "success" }, processingTime);
+
     return res.json(out);
 
   } catch (e) {
+    // Track failed processing time
+    const processingTime = Date.now() - processingStart;
+    audioProcessingTime.observe({ status: "error" }, processingTime);
+    
     console.error("processing_failed:", e?.response?.status || "", e?.response?.data || "", e);
     return res.status(500).json({ error: "processing_failed", details: String(e) });
   }
 });
 
+// Sentry error handler
+if (process.env.SENTRY_DSN) {
+  app.use(Sentry.errorHandler());
+}
+
 /* ===== Start ===== */
 app.listen(PORT, () => console.log("Voice agent running on", PORT));
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('🛑 Shutting down voice agent...');
+  db.close((err) => {
+    if (err) {
+      console.error('❌ Error closing database:', err);
+    } else {
+      console.log('✅ Database closed');
+    }
+    process.exit(0);
+  });
+});
