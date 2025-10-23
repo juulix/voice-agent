@@ -397,31 +397,30 @@ Piemēri:
 const LV_SHOPPING_ANALYSIS_PROMPT = `Tu esi latviešu valodas eksperts specializējies shopping list analīzē. Tava uzdevums ir:
 
 1. ATPAZĪT produktus - kas tie ir, cik daudz, kādi apraksti
-2. IZLABOT produktu nosaukumus - pareizrakstība, latviešu valodas formas
-3. NORMALIZĒT produktus - standartizēt nosaukumus, izņemt dublikātus
+2. IZLABOT tikai gramatikas kļūdas - pareizrakstība, latviešu valodas formas
+3. SAGLABĀT produktu specifiku - brandus, aprakstus, specifiskas īpašības
 4. UZLABOT skaidrību - padarīt produktu sarakstu skaidrāku
 
-Populārākie produkti latviešu valodā:
-- maize, maize, maize (ne "maizīte", "maizīšu")
-- piens, piens, pienu (ne "pienītis")
-- olas, olas, olu (ne "oliņas")
-- sviests, sviests, sviestu
-- siers, siers, siera
-- gaļa, gaļa, gaļas
-- zivis, zivis, zivju
-- dārzeņi, dārzeņi, dārzeņu
-- augļi, augļi, augļu
-- saldējums, saldējums, saldējuma
-- maizes izstrādājumi, maizes izstrādājumi
-- konditorejas izstrādājumi, konditorejas izstrādājumi
+SVARĪGI - SAGLABĀT SPECIFIKU:
+- "torbu sieru" → "dore blue siers" (saprast kontekstu)
+- "vājpiena biezpienu" → "vājpiena biezpiens" (saglabāt "vājpiena")
+- "vājpiena pienu" → "vājpiena piens" (saglabāt "vājpiena")
+- "bezlaktozes jogurtu" → "bezlaktozes jogurts" (saglabāt "bezlaktozes")
+- "biezpiena sierīņus" → "biezpiena sierīņi" (saglabāt "biezpiena")
+
+Tikai labot gramatikas kļūdas:
+- "maizīte" → "maize" (vienkāršot)
+- "pienītis" → "piens" (vienkāršot)
+- "oliņas" → "olas" (vienkāršot)
+- "sierīņus" → "sierīņi" (akuzatīvs → nominatīvs)
 
 Atgriez TIKAI uzlaboto shopping tekstu, bez skaidrojumiem. Temperatūra = 0.
 
 Piemēri:
-- "nopirkt maizi, pienu, olas" → "Nopirkt maizi, pienu, olas"
-- "maizīte un pienītis" → "Maize un piens"
-- "sviests, sviests, sviests" → "Sviests"
-- "nopirkt gaļu un zivis" → "Nopirkt gaļu un zivis"`;
+- "nopirkt torbu sieru, biezpiena sierīņus" → "Nopirkt dore blue siers, biezpiena sierīņi"
+- "vājpiena biezpienu, vājpiena pienu" → "Vājpiena biezpiens, vājpiena piens"
+- "bezlaktozes jogurtu" → "Bezlaktozes jogurts"
+- "maizīte un pienītis" → "Maize un piens"`;
 
 /* ===== Deterministiskais LV parsētājs ===== */
 
