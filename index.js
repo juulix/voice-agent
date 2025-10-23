@@ -44,15 +44,6 @@ db.serialize(() => {
     UNIQUE(user_id, day_key)
   )`);
   
-  // Product learning table
-  db.run(`CREATE TABLE IF NOT EXISTS product_learning (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    product TEXT NOT NULL,
-    normalized_name TEXT UNIQUE NOT NULL,
-    correct_category TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
 });
 
 /* ===== PROMETHEUS METRICS ===== */
@@ -433,135 +424,6 @@ Piemēri:
 - "nopirkt gaļu un zivis" → "Nopirkt gaļu un zivis"`;
 
 /* ===== Deterministiskais LV parsētājs ===== */
-// Product categorization function
-async function categorizeProducts(itemsString) {
-  if (!itemsString) return [];
-  
-  const items = itemsString.split(',').map(item => item.trim()).filter(item => item);
-  if (items.length === 0) return [];
-  
-  // First check learned products
-  const learnedProducts = await new Promise((resolve, reject) => {
-    const placeholders = items.map(() => '?').join(',');
-    const normalizedItems = items.map(item => 
-      item.toLowerCase()
-        .replace(/ā/g, 'a').replace(/ē/g, 'e').replace(/ī/g, 'i')
-        .replace(/ō/g, 'o').replace(/ū/g, 'u').replace(/č/g, 'c')
-        .replace(/ģ/g, 'g').replace(/ķ/g, 'k').replace(/ļ/g, 'l')
-        .replace(/ņ/g, 'n').replace(/š/g, 's').replace(/ž/g, 'z')
-        .replace(/[.,-]/g, ' ').replace(/\s+/g, ' ').trim()
-    );
-    
-    db.all(
-      `SELECT product, correct_category FROM product_learning WHERE normalized_name IN (${placeholders})`,
-      normalizedItems,
-      (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      }
-    );
-  });
-  
-  // Create learned product map
-  const learnedMap = {};
-  learnedProducts.forEach(row => {
-    learnedMap[row.product] = row.correct_category;
-  });
-  
-  // Separate learned and unknown products
-  const unknownItems = items.filter(item => !learnedMap[item]);
-  const learnedItems = items.filter(item => learnedMap[item]);
-  
-  let classifications = [];
-  
-  // Add learned items
-  learnedItems.forEach(item => {
-    classifications.push({
-      product: item,
-      category: learnedMap[item],
-      source: 'learned'
-    });
-  });
-  
-  // If all items are learned, return immediately
-  if (unknownItems.length === 0) {
-    console.log(`✅ All ${items.length} products found in learning database`);
-    return classifications;
-  }
-  
-  // Use AI for unknown products
-  console.log(`🤖 Using AI for ${unknownItems.length} unknown products`);
-  
-  const prompt = `Klasificē šos latviešu pārtikas produktus pēc kategorijām:
-
-Kategorijas:
-- vegetables (dārzeņi: tomāti, gurķi, kartupeļi, sīpoli, burkāni, ķirši)
-- fruits (augļi: āboli, banāni, citrusi, ogles, bumbieri)
-- meat (gaļa: liellopa gaļa, vista, cūkgaļa, maltā gaļa, kotletes, cīsiņi, desa, šašliks)
-- fish (zivis: zivis, zivju filejas, vēzis, krabji)
-- dairy (piena produkti: piens, siers, jogurts, krējums, biezpiens, sviests, kefīrs)
-- eggs (olas: vistas olas, pīļu olas)
-- bakery (maize: maize, kliņģeris, kūkas, biskvīti, kāpostmaize)
-- grains (graudi: rīsi, griķi, auzas, kvieši, makaroni)
-- snacks (uzkodas: čipsi, saldumi, rieksti, sēklas, kūkas)
-- ready_meals (gatavie ēdieni: salāti, zupas, ēdieni uzreiz)
-- beverages (dzērieni: ūdens, sula, kafija, tēja, limonāde, kvass, vīns, vodka, alus, degvīns)
-- household (mājsaimniecība: šampūns, zobu birste, papīrs, ziepes)
-- hygiene (higiēna: zobu pasta, šampūns, ziepes, kremas)
-- pet (mājdzīvniekiem: suņu barība, kaķu barība, putnu barība)
-- international (starptautiskie produkti: ķīniešu ēdieni, japāņu ēdieni)
-- construction (būvniecība: krāsa, skrūves, dēļi)
-
-Svarīgi:
-- "sarkanvīns" → beverages (alkohols ir dzērieni)
-- "vodka" → beverages (alkohols ir dzērieni) 
-- "cīsiņi" → meat (sausā gaļa ir gaļa)
-- "bērnu cīsiņi" → meat (bērnu gaļa ir gaļa)
-- "dore blue siers" → dairy (saglabājot pilno nosaukumu)
-- "bezlaktozes jogurts" → dairy (saglabājot pilno nosaukumu)
-
-Produkti: ${unknownItems.join(', ')}
-
-Atbildi tikai JSON formātā:
-[
-  {"product": "produkta_nosaukums", "category": "kategorijas_slug"},
-  ...
-]`;
-
-  try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "Tu esi eksperts pārtikas produktu klasifikācijā. Atbildi tikai JSON formātā." },
-        { role: "user", content: prompt }
-      ],
-      max_tokens: 1000,
-      temperature: 0.1
-    });
-
-    const content = completion.choices[0].message.content.trim();
-    const cleanContent = content
-      .replace(/```json/g, '')
-      .replace(/```/g, '')
-      .trim();
-
-    const aiClassifications = JSON.parse(cleanContent);
-    
-    // Add AI classifications
-    aiClassifications.forEach(item => {
-      classifications.push({
-        product: item.product,
-        category: item.category,
-        source: 'ai'
-      });
-    });
-    
-    return classifications;
-  } catch (error) {
-    console.error('Product categorization error:', error);
-    return classifications; // Return learned items even if AI fails
-  }
-}
 
 const SYSTEM_PROMPT = `Tu esi deterministisks latviešu dabiskās valodas parsētājs, kas no īsa teikuma izvada TIKAI TĪRU JSON vienā no trim formām: calendar, reminder vai shopping. Atbilde bez skaidrojumiem, bez teksta ārpus JSON. Temperatūra = 0.
 
@@ -659,53 +521,6 @@ app.get("/metrics", async (req, res) => {
   res.end(await register.metrics());
 });
 
-/* ===== PRODUCT LEARNING ===== */
-// Learn from user corrections
-app.post("/api/learn", async (req, res) => {
-  try {
-    const { product, correctCategory } = req.body;
-    
-    if (!product || !correctCategory) {
-      return res.status(400).json({ 
-        error: 'Product and correctCategory are required',
-        requestId: req.requestId
-      });
-    }
-
-    // Store learning data in database
-    const normalizedName = product.toLowerCase()
-      .replace(/ā/g, 'a').replace(/ē/g, 'e').replace(/ī/g, 'i')
-      .replace(/ō/g, 'o').replace(/ū/g, 'u').replace(/č/g, 'c')
-      .replace(/ģ/g, 'g').replace(/ķ/g, 'k').replace(/ļ/g, 'l')
-      .replace(/ņ/g, 'n').replace(/š/g, 's').replace(/ž/g, 'z')
-      .replace(/[.,-]/g, ' ').replace(/\s+/g, ' ').trim();
-    
-    db.run(
-      `INSERT INTO product_learning (product, normalized_name, correct_category, created_at) 
-       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-       ON CONFLICT(normalized_name) DO UPDATE SET
-       correct_category = excluded.correct_category,
-       updated_at = CURRENT_TIMESTAMP`,
-      [product, normalizedName, correctCategory]
-    );
-
-    console.log(`📚 Learned: "${product}" → "${correctCategory}"`);
-    
-    res.json({ 
-      success: true, 
-      message: "Learning saved",
-      requestId: req.requestId
-    });
-
-  } catch (error) {
-    console.error('Learning error:', error);
-    res.status(500).json({ 
-      error: 'Learning failed', 
-      details: error.message,
-      requestId: req.requestId
-    });
-  }
-});
 
 /* ===== /quota ===== */
 const normalizeDaily = (n) => (n >= 999999 ? null : n);
@@ -932,17 +747,6 @@ app.post("/ingest-audio", async (req, res) => {
     out.analysis_applied = needsAnalysis;
     out.confidence = score;
 
-    // Add product categorization for shopping items
-    if (out.type === "shopping" && out.items) {
-      try {
-        const categorizedItems = await categorizeProducts(out.items);
-        out.categorized_items = categorizedItems;
-        console.log(`✅ Products categorized: ${categorizedItems.length} items`);
-      } catch (e) {
-        console.warn("Product categorization failed:", e);
-        out.categorized_items = [];
-      }
-    }
 
     // ŠIS ieraksts derīgs → skaitām kvotu
     u.daily.used += 1;
