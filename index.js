@@ -153,6 +153,52 @@ function qualityScore(text) {
   return Math.max(0, Math.min(1, score));
 }
 
+/* ===== LV teksta analīzes un korekcijas AI ===== */
+const LV_ANALYSIS_PROMPT = `Tu esi latviešu valodas eksperts, kas analizē un uzlabo transkribētos tekstus. Tava uzdevums ir:
+
+1. ANALIZĒT tekstu - atpazīt vārdus, kontekstu, nozīmi
+2. IZLABOT kļūdas - gramatika, pareizrakstība, vārdu formas
+3. UZLABOT skaidrību - padarīt tekstu skaidrāku un precīzāku
+4. SAGLABĀT nozīmi - neizmainīt sākotnējo nozīmi
+
+Atgriez TIKAI uzlaboto tekstu, bez skaidrojumiem. Temperatūra = 0.
+
+Piemēri:
+- "reit nopirkt maizi" → "Rīt nopirkt maizi"
+- "pulkstenis deviņos tikšanās" → "Pulksten deviņos tikšanās"
+- "atgādini man rīt uz darbu" → "Atgādini man rīt uz darbu"
+- "rīt no rīta uz darbu" → "Rīt no rīta uz darbu"`;
+
+/* ===== LV shopping list analīzes AI ===== */
+const LV_SHOPPING_ANALYSIS_PROMPT = `Tu esi latviešu valodas eksperts specializējies shopping list analīzē. Tava uzdevums ir:
+
+1. ATPAZĪT produktus - kas tie ir, cik daudz, kādi apraksti
+2. IZLABOT produktu nosaukumus - pareizrakstība, latviešu valodas formas
+3. NORMALIZĒT produktus - standartizēt nosaukumus, izņemt dublikātus
+4. UZLABOT skaidrību - padarīt produktu sarakstu skaidrāku
+
+Populārākie produkti latviešu valodā:
+- maize, maize, maize (ne "maizīte", "maizīšu")
+- piens, piens, pienu (ne "pienītis")
+- olas, olas, olu (ne "oliņas")
+- sviests, sviests, sviestu
+- siers, siers, siera
+- gaļa, gaļa, gaļas
+- zivis, zivis, zivju
+- dārzeņi, dārzeņi, dārzeņu
+- augļi, augļi, augļu
+- saldējums, saldējums, saldējuma
+- maizes izstrādājumi, maizes izstrādājumi
+- konditorejas izstrādājumi, konditorejas izstrādājumi
+
+Atgriez TIKAI uzlaboto shopping tekstu, bez skaidrojumiem. Temperatūra = 0.
+
+Piemēri:
+- "nopirkt maizi, pienu, olas" → "Nopirkt maizi, pienu, olas"
+- "maizīte un pienītis" → "Maize un piens"
+- "sviests, sviests, sviests" → "Sviests"
+- "nopirkt gaļu un zivis" → "Nopirkt gaļu un zivis"`;
+
 /* ===== Deterministiskais LV parsētājs ===== */
 const SYSTEM_PROMPT = `Tu esi deterministisks latviešu dabiskās valodas parsētājs, kas no īsa teikuma izvada TIKAI TĪRU JSON vienā no trim formām: calendar, reminder vai shopping. Atbilde bez skaidrojumiem, bez teksta ārpus JSON. Temperatūra = 0.
 
@@ -298,12 +344,54 @@ app.post("/ingest-audio", async (req, res) => {
       });
     }
 
+    // Trešā AI apstrāde - LV teksta analīze un korekcija
+    let analyzedText = norm;
+    if ((langHint || "lv").startsWith("lv")) {
+      try {
+        // Vispārējā LV analīze
+        const analysis = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          temperature: 0,
+          messages: [
+            { role: "system", content: LV_ANALYSIS_PROMPT },
+            { role: "user", content: norm }
+          ]
+        });
+        analyzedText = (analysis.choices?.[0]?.message?.content || norm).trim();
+        
+        // Papildu shopping list analīze, ja teksts satur shopping vārdus
+        const shoppingKeywords = ["nopirkt", "pirkt", "iepirkums", "iepirkt", "veikals", "veikalā", "pirkumu", "pirkumus"];
+        const isShoppingText = shoppingKeywords.some(keyword => 
+          analyzedText.toLowerCase().includes(keyword.toLowerCase())
+        );
+        
+        if (isShoppingText) {
+          try {
+            const shoppingAnalysis = await openai.chat.completions.create({
+              model: "gpt-4o-mini",
+              temperature: 0,
+              messages: [
+                { role: "system", content: LV_SHOPPING_ANALYSIS_PROMPT },
+                { role: "user", content: analyzedText }
+              ]
+            });
+            analyzedText = (shoppingAnalysis.choices?.[0]?.message?.content || analyzedText).trim();
+          } catch (e) {
+            console.warn("Shopping analysis failed, using general analysis:", e);
+          }
+        }
+      } catch (e) {
+        console.warn("LV analysis failed, using normalized text:", e);
+        analyzedText = norm;
+      }
+    }
+
     // Laika enkuri
     const nowISO = fields.currentTime || toRigaISO(new Date());
     const tmr = new Date(Date.now() + 24 * 3600 * 1000);
     const tomorrowISO = fields.tomorrowExample || toRigaISO(new Date(tmr.getFullYear(), tmr.getMonth(), tmr.getDate(), 0, 0, 0));
 
-    const userMsg = `currentTime=${nowISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${norm}`;
+    const userMsg = `currentTime=${nowISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${analyzedText}`;
 
     // Parsēšana uz JSON
     const chat = await openai.chat.completions.create({
@@ -325,6 +413,7 @@ app.post("/ingest-audio", async (req, res) => {
 
     out.raw_transcript = raw;
     out.normalized_transcript = norm;
+    out.analyzed_transcript = analyzedText;
     out.confidence = score;
 
     // ŠIS ieraksts derīgs → skaitām kvotu
