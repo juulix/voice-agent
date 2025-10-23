@@ -344,45 +344,69 @@ app.post("/ingest-audio", async (req, res) => {
       });
     }
 
-    // Trešā AI apstrāde - LV teksta analīze un korekcija
+    // Trešā AI apstrāde - LV teksta analīze un korekcija (tikai ja nepieciešams)
     let analyzedText = norm;
+    let needsAnalysis = false;
+    
     if ((langHint || "lv").startsWith("lv")) {
-      try {
-        // Vispārējā LV analīze
-        const analysis = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          temperature: 0,
-          messages: [
-            { role: "system", content: LV_ANALYSIS_PROMPT },
-            { role: "user", content: norm }
-          ]
-        });
-        analyzedText = (analysis.choices?.[0]?.message?.content || norm).trim();
+      // Pārbaudām vai teksts jau ir labs
+      const qualityThreshold = 0.7;
+      const currentScore = qualityScore(norm);
+      
+      // Pārbaudām vai ir kļūdas, kas nepieciešama AI labošana
+      const hasCommonErrors = /[āčēģīķļņšūž]/.test(norm) || // diakritiskās zīmes
+                              norm !== norm.toLowerCase() || // mazie burti
+                              norm.includes("maizīte") || norm.includes("pienītis") || // zināmās kļūdas
+                              norm.includes("reit") || norm.includes("rit") || // laika kļūdas
+                              currentScore < qualityThreshold;
+      
+      needsAnalysis = hasCommonErrors;
+      
+      if (needsAnalysis) {
+        console.log(`🔍 Text needs analysis (score: ${currentScore.toFixed(2)}, errors: ${hasCommonErrors})`);
         
-        // Papildu shopping list analīze, ja teksts satur shopping vārdus
-        const shoppingKeywords = ["nopirkt", "pirkt", "iepirkums", "iepirkt", "veikals", "veikalā", "pirkumu", "pirkumus"];
-        const isShoppingText = shoppingKeywords.some(keyword => 
-          analyzedText.toLowerCase().includes(keyword.toLowerCase())
-        );
-        
-        if (isShoppingText) {
-          try {
-            const shoppingAnalysis = await openai.chat.completions.create({
-              model: "gpt-4o-mini",
-              temperature: 0,
-              messages: [
-                { role: "system", content: LV_SHOPPING_ANALYSIS_PROMPT },
-                { role: "user", content: analyzedText }
-              ]
-            });
-            analyzedText = (shoppingAnalysis.choices?.[0]?.message?.content || analyzedText).trim();
-          } catch (e) {
-            console.warn("Shopping analysis failed, using general analysis:", e);
+        try {
+          // Vispārējā LV analīze
+          const analysis = await openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            temperature: 0,
+            messages: [
+              { role: "system", content: LV_ANALYSIS_PROMPT },
+              { role: "user", content: norm }
+            ]
+          });
+          analyzedText = (analysis.choices?.[0]?.message?.content || norm).trim();
+          
+          // Papildu shopping list analīze, ja teksts satur shopping vārdus
+          const shoppingKeywords = ["nopirkt", "pirkt", "iepirkums", "iepirkt", "veikals", "veikalā", "pirkumu", "pirkumus"];
+          const isShoppingText = shoppingKeywords.some(keyword => 
+            analyzedText.toLowerCase().includes(keyword.toLowerCase())
+          );
+          
+          if (isShoppingText) {
+            console.log("🛒 Detected shopping text, applying shopping analysis");
+            try {
+              const shoppingAnalysis = await openai.chat.completions.create({
+                model: "gpt-4o-mini",
+                temperature: 0,
+                messages: [
+                  { role: "system", content: LV_SHOPPING_ANALYSIS_PROMPT },
+                  { role: "user", content: analyzedText }
+                ]
+              });
+              analyzedText = (shoppingAnalysis.choices?.[0]?.message?.content || analyzedText).trim();
+            } catch (e) {
+              console.warn("Shopping analysis failed, using general analysis:", e);
+            }
           }
+          
+          console.log(`✅ Text analyzed: "${norm}" → "${analyzedText}"`);
+        } catch (e) {
+          console.warn("LV analysis failed, using normalized text:", e);
+          analyzedText = norm;
         }
-      } catch (e) {
-        console.warn("LV analysis failed, using normalized text:", e);
-        analyzedText = norm;
+      } else {
+        console.log(`✅ Text is good quality (score: ${currentScore.toFixed(2)}), skipping AI analysis`);
       }
     }
 
@@ -414,6 +438,7 @@ app.post("/ingest-audio", async (req, res) => {
     out.raw_transcript = raw;
     out.normalized_transcript = norm;
     out.analyzed_transcript = analyzedText;
+    out.analysis_applied = needsAnalysis;
     out.confidence = score;
 
     // ŠIS ieraksts derīgs → skaitām kvotu
