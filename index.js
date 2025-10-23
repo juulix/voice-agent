@@ -15,6 +15,66 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
+/* ===== MIDDLEWARE ===== */
+
+// Request ID middleware
+app.use((req, res, next) => {
+  req.requestId = req.header('X-Request-Id') || `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  next();
+});
+
+// X-User-Id validation middleware
+app.use((req, res, next) => {
+  const method = req.method?.toUpperCase();
+  const needsUser = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
+  const isPublicGet = method === "GET" && ["/", "/health", "/ready", "/version"].includes(req.path);
+  
+  if (!needsUser || isPublicGet) return next();
+  
+  const userId = req.header("X-User-Id");
+  if (!userId || !/^u-\d+-[a-z0-9]{8}$/.test(userId)) {
+    return res.status(400).json({ 
+      error: "missing_or_invalid_user_id",
+      requestId: req.requestId,
+      expectedFormat: "u-timestamp-8chars"
+    });
+  }
+  req.userId = userId;
+  next();
+});
+
+// Structured logging middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  const originalSend = res.send;
+  
+  res.send = function(data) {
+    const duration = Date.now() - start;
+    const logData = {
+      requestId: req.requestId,
+      userId: req.userId || 'anon',
+      method: req.method,
+      path: req.path,
+      statusCode: res.statusCode,
+      duration: `${duration}ms`,
+      userAgent: req.header('User-Agent'),
+      appVersion: req.header('X-App-Version'),
+      deviceId: req.header('X-Device-Id'),
+      plan: req.header('X-Plan')
+    };
+    
+    if (res.statusCode >= 400) {
+      console.error(`❌ [${req.requestId}] ${req.method} ${req.path} - ${res.statusCode} (${duration}ms)`, logData);
+    } else {
+      console.log(`✅ [${req.requestId}] ${req.method} ${req.path} - ${res.statusCode} (${duration}ms)`, logData);
+    }
+    
+    return originalSend.call(this, data);
+  };
+  
+  next();
+});
+
 /* ===== PLANS (fiksēta konfigurācija kodā) ===== */
 const plans = {
   basic: { dailyLimit: 5,      monthlyLimit: null },
@@ -31,6 +91,25 @@ const GRACE_DAILY = 2; // “kļūdu buferis” – ne-soda mēģinājumi dienā
    }
 */
 const usage = new Map();
+
+/* ===== Idempotency tracking =====
+   idempotency[key] = {
+     result: responseData,
+     timestamp: Date.now(),
+     expires: Date.now() + 5 * 60 * 1000 // 5 minutes
+   }
+*/
+const idempotency = new Map();
+
+// Clean expired idempotency keys every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of idempotency.entries()) {
+    if (value.expires < now) {
+      idempotency.delete(key);
+    }
+  }
+}, 10 * 60 * 1000);
 
 /* ===== Helpers: laiks, mime, plāni ===== */
 function todayKeyRiga(d = new Date()) {
@@ -237,8 +316,59 @@ Izvades shēmas:
 
 Atgriez tikai vienu no formām.`;
 
-/* ===== Healthcheck ===== */
-app.get("/", (_req, res) => res.json({ ok: true }));
+/* ===== RATE LIMITING ===== */
+const rateLimit = require('express-rate-limit');
+
+const limiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60, // 60 requests per minute
+  keyGenerator: (req) => req.userId || req.ip,
+  message: { 
+    error: "rate_limit_exceeded",
+    requestId: (req) => req.requestId,
+    retryAfter: "1 minute"
+  },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+app.use('/ingest-audio', limiter);
+
+/* ===== HEALTH ENDPOINTS ===== */
+app.get("/", (req, res) => res.json({ 
+  ok: true, 
+  requestId: req.requestId,
+  timestamp: new Date().toISOString()
+}));
+
+app.get("/health", (req, res) => res.json({ 
+  status: "healthy",
+  requestId: req.requestId,
+  timestamp: new Date().toISOString(),
+  uptime: process.uptime()
+}));
+
+app.get("/ready", (req, res) => {
+  // Check if OpenAI API is accessible
+  const isReady = !!process.env.OPENAI_API_KEY;
+  const status = isReady ? "ready" : "not_ready";
+  const statusCode = isReady ? 200 : 503;
+  
+  res.status(statusCode).json({
+    status,
+    requestId: req.requestId,
+    timestamp: new Date().toISOString(),
+    openai: isReady ? "configured" : "missing"
+  });
+});
+
+app.get("/version", (req, res) => res.json({
+  version: "2025.01.15-1",
+  requestId: req.requestId,
+  timestamp: new Date().toISOString(),
+  commit: process.env.RAILWAY_GIT_COMMIT_SHA || "unknown",
+  node: process.version
+}));
 
 /* ===== /quota ===== */
 const normalizeDaily = (n) => (n >= 999999 ? null : n);
@@ -273,7 +403,24 @@ app.post("/ingest-audio", async (req, res) => {
     if (APP_BEARER_TOKEN) {
       const auth = req.headers.authorization || "";
       if (auth !== `Bearer ${APP_BEARER_TOKEN}`) {
-        return res.status(401).json({ error: "unauthorized" });
+        return res.status(401).json({ 
+          error: "unauthorized",
+          requestId: req.requestId
+        });
+      }
+    }
+
+    // Idempotency check
+    const idempotencyKey = req.header("Idempotency-Key");
+    if (idempotencyKey) {
+      const cached = idempotency.get(idempotencyKey);
+      if (cached && cached.expires > Date.now()) {
+        console.log(`🔄 [${req.requestId}] Returning cached result for Idempotency-Key: ${idempotencyKey}`);
+        return res.json({
+          ...cached.result,
+          requestId: req.requestId,
+          cached: true
+        });
       }
     }
 
@@ -458,6 +605,18 @@ app.post("/ingest-audio", async (req, res) => {
       out.quota.monthlyLimit = limits.monthlyLimit;
       out.quota.monthlyUsed = u.monthly.used;
       out.quota.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
+    }
+
+    // Add request ID to response
+    out.requestId = req.requestId;
+
+    // Cache result for idempotency
+    if (idempotencyKey) {
+      idempotency.set(idempotencyKey, {
+        result: out,
+        timestamp: Date.now(),
+        expires: Date.now() + 5 * 60 * 1000 // 5 minutes
+      });
     }
 
     return res.json(out);
