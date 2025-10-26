@@ -95,10 +95,24 @@ const quotaUsage = new client.Counter({
   labelNames: ["plan", "type"]
 });
 
+const operationsTotal = new client.Counter({
+  name: "operations_total",
+  help: "Total operations (transcriptions)",
+  labelNames: ["status", "plan"]
+});
+
+const databaseOperations = new client.Counter({
+  name: "database_operations_total",
+  help: "Total database operations",
+  labelNames: ["operation", "table"]
+});
+
 register.registerMetric(httpRequests);
 register.registerMetric(httpLatency);
 register.registerMetric(audioProcessingTime);
 register.registerMetric(quotaUsage);
+register.registerMetric(operationsTotal);
+register.registerMetric(databaseOperations);
 
 /* ===== APP SETUP ===== */
 const app = express();
@@ -812,8 +826,14 @@ app.post("/ingest-audio", async (req, res) => {
     // ŠIS ieraksts derīgs → skaitām kvotu
     u.daily.used += 1;
     
+    // Track successful operations
+    operationsTotal.inc({ status: "success", plan: limits.plan }, 1);
+    
     // Update quota in database (monthly is calculated automatically)
     await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
+    
+    // Track database operations
+    databaseOperations.inc({ operation: "update", table: "quota_usage" }, 1);
     
     // Track quota usage metrics
     quotaUsage.inc({ plan: limits.plan, type: "daily" }, 1);
@@ -858,6 +878,9 @@ app.post("/ingest-audio", async (req, res) => {
     // Track failed processing time
     const processingTime = Date.now() - processingStart;
     audioProcessingTime.observe({ status: "error" }, processingTime);
+    
+    // Track failed operations
+    operationsTotal.inc({ status: "error", plan: req.header("X-Plan") || "unknown" }, 1);
     
     console.error("processing_failed:", e?.response?.status || "", e?.response?.data || "", e);
     return res.status(500).json({ error: "processing_failed", details: String(e) });
