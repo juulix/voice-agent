@@ -537,9 +537,36 @@ app.get("/health", (req, res) => res.json({
   uptime: process.uptime()
 }));
 
-app.get("/ready", (req, res) => {
-  // Check if OpenAI API is accessible
-  const isReady = !!process.env.OPENAI_API_KEY;
+// Cache for health check status (check every 30 seconds, not every request)
+let healthCheckStatus = {
+  isReady: false,
+  lastChecked: 0,
+  checkInterval: 30000 // 30 seconds
+};
+
+async function performHealthCheck() {
+  const now = Date.now();
+  
+  // Use cached result if less than 30 seconds old
+  if (now - healthCheckStatus.lastChecked < healthCheckStatus.checkInterval) {
+    return healthCheckStatus.isReady;
+  }
+  
+  try {
+    // Quick OpenAI API test
+    await openai.models.list(); // Lightweight API call
+    healthCheckStatus.isReady = true;
+    healthCheckStatus.lastChecked = now;
+    return true;
+  } catch (error) {
+    healthCheckStatus.isReady = false;
+    healthCheckStatus.lastChecked = now;
+    return false;
+  }
+}
+
+app.get("/ready", async (req, res) => {
+  const isReady = await performHealthCheck();
   const status = isReady ? "ready" : "not_ready";
   const statusCode = isReady ? 200 : 503;
   
@@ -547,7 +574,8 @@ app.get("/ready", (req, res) => {
     status,
     requestId: req.requestId,
     timestamp: new Date().toISOString(),
-    openai: isReady ? "configured" : "missing"
+    openai: isReady ? "reachable" : "unreachable",
+    cached: Date.now() - healthCheckStatus.lastChecked < healthCheckStatus.checkInterval
   });
 });
 
@@ -560,6 +588,17 @@ app.get("/version", (req, res) => res.json({
 }));
 
 app.get("/metrics", async (req, res) => {
+  // Require authentication for metrics endpoint
+  const auth = req.headers.authorization || "";
+  const expectedToken = `Bearer ${APP_BEARER_TOKEN}`;
+  
+  if (APP_BEARER_TOKEN && auth !== expectedToken) {
+    return res.status(401).json({ 
+      error: "unauthorized",
+      requestId: req.requestId
+    });
+  }
+  
   res.set("Content-Type", register.contentType);
   res.end(await register.metrics());
 });
