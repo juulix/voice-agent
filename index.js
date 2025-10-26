@@ -758,7 +758,7 @@ app.post("/ingest-audio", async (req, res) => {
           const analysis = await openai.chat.completions.create({
             model: "gpt-5-nano", // Optimized for cost and speed
             temperature: 0,
-            max_tokens: 200, // Limit output for cost savings
+            max_completion_tokens: 200, // Limit output for cost savings
             messages: [
               { role: "system", content: LV_COMBINED_ANALYSIS_PROMPT },
               { role: "user", content: norm }
@@ -793,7 +793,7 @@ app.post("/ingest-audio", async (req, res) => {
           model: "gpt-5-nano", // Optimized for cost and speed
           temperature: 0,
           response_format: { type: "json_object" },
-          max_tokens: 300, // Limit output for cost savings
+          max_completion_tokens: 300, // Limit output for cost savings
           messages: [
             { role: "system", content: SYSTEM_PROMPT },
             { role: "user", content: userMsg }
