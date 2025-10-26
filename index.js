@@ -30,6 +30,7 @@ const db = new sqlite3.Database(dbPath);
 
 // Initialize quota tracking tables
 db.serialize(() => {
+  // Daily usage tracking
   db.run(`CREATE TABLE IF NOT EXISTS quota_usage (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
@@ -44,6 +45,12 @@ db.serialize(() => {
     UNIQUE(user_id, day_key)
   )`);
   
+  // Create indexes for performance
+  db.run(`CREATE INDEX IF NOT EXISTS idx_user_day ON quota_usage(user_id, day_key)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_user_month ON quota_usage(user_id, month_key)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_month_key ON quota_usage(month_key)`);
+  
+  console.log('✅ Database indexes created');
 });
 
 /* ===== PROMETHEUS METRICS ===== */
@@ -296,19 +303,50 @@ async function getUserUsage(userId, planHeader) {
   });
 }
 
-async function updateQuotaUsage(userId, plan, dailyUsed, dailyGraceUsed, monthlyUsed) {
+// Calculate actual monthly usage from SUM of daily_used
+async function calculateMonthlyUsage(userId, monthKey) {
+  return new Promise((resolve, reject) => {
+    db.get(
+      `SELECT COALESCE(SUM(daily_used), 0) as total_monthly_used 
+       FROM quota_usage 
+       WHERE user_id = ? AND month_key = ?`,
+      [userId, monthKey],
+      (err, row) => {
+        if (err) reject(err);
+        else resolve(row?.total_monthly_used || 0);
+      }
+    );
+  });
+}
+
+async function updateQuotaUsage(userId, plan, dailyUsed, dailyGraceUsed) {
   const today = todayKeyRiga();
   const mKey = monthKeyRiga();
   
   return new Promise((resolve, reject) => {
     db.run(
       `UPDATE quota_usage 
-       SET daily_used = ?, daily_grace_used = ?, monthly_used = ?, updated_at = CURRENT_TIMESTAMP
+       SET daily_used = ?, daily_grace_used = ?, updated_at = CURRENT_TIMESTAMP
        WHERE user_id = ? AND day_key = ?`,
-      [dailyUsed, dailyGraceUsed, monthlyUsed, userId, today],
+      [dailyUsed, dailyGraceUsed, userId, today],
       function(err) {
-        if (err) reject(err);
-        else resolve();
+        if (err) {
+          reject(err);
+          return;
+        }
+        
+        // Update monthly_used field for easier tracking
+        if (plan === "pro") {
+          calculateMonthlyUsage(userId, mKey).then(totalMonthly => {
+            db.run(
+              `UPDATE quota_usage SET monthly_used = ? WHERE user_id = ? AND month_key = ?`,
+              [totalMonthly, userId, mKey],
+              () => resolve()
+            );
+          }).catch(reject);
+        } else {
+          resolve();
+        }
       }
     );
   });
@@ -749,10 +787,9 @@ app.post("/ingest-audio", async (req, res) => {
 
     // ŠIS ieraksts derīgs → skaitām kvotu
     u.daily.used += 1;
-    if (limits.plan === "pro") u.monthly.used += 1;
     
-    // Update quota in database
-    await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed, u.monthly.used);
+    // Update quota in database (monthly is calculated automatically)
+    await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
     
     // Track quota usage metrics
     quotaUsage.inc({ plan: limits.plan, type: "daily" }, 1);
