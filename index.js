@@ -756,8 +756,9 @@ app.post("/ingest-audio", async (req, res) => {
         try {
           // Combined LV analysis (saves 1 AI call by doing both general + shopping analysis in one call)
           const analysis = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
+            model: "gpt-5-nano", // Optimized for cost and speed
             temperature: 0,
+            max_tokens: 200, // Limit output for cost savings
             messages: [
               { role: "system", content: LV_COMBINED_ANALYSIS_PROMPT },
               { role: "user", content: norm }
@@ -789,9 +790,10 @@ app.post("/ingest-audio", async (req, res) => {
     while (retryCount <= maxRetries) {
       try {
         chat = await openai.chat.completions.create({
-          model: "gpt-4o-mini", // Changed from gpt-4.1-mini for better performance
+          model: "gpt-5-nano", // Optimized for cost and speed
           temperature: 0,
           response_format: { type: "json_object" },
+          max_tokens: 300, // Limit output for cost savings
           messages: [
             { role: "system", content: SYSTEM_PROMPT },
             { role: "user", content: userMsg }
