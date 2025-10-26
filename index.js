@@ -30,6 +30,12 @@ const db = new sqlite3.Database(dbPath);
 
 // Initialize quota tracking tables
 db.serialize(() => {
+  // SQLite PRAGMA optimizations for better performance
+  db.run("PRAGMA journal_mode=WAL");
+  db.run("PRAGMA synchronous=NORMAL");
+  db.run("PRAGMA busy_timeout=3000");
+  db.run("PRAGMA cache_size=-10000"); // 10MB cache
+  
   // Daily usage tracking
   db.run(`CREATE TABLE IF NOT EXISTS quota_usage (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,7 +56,7 @@ db.serialize(() => {
   db.run(`CREATE INDEX IF NOT EXISTS idx_user_month ON quota_usage(user_id, month_key)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_month_key ON quota_usage(month_key)`);
   
-  console.log('✅ Database indexes created');
+  console.log('✅ Database optimized and indexes created');
 });
 
 /* ===== PROMETHEUS METRICS ===== */
@@ -693,7 +699,7 @@ app.post("/ingest-audio", async (req, res) => {
     
     if ((langHint || "lv").startsWith("lv")) {
       // Pārbaudām vai teksts jau ir labs
-      const qualityThreshold = 0.7;
+      const qualityThreshold = 0.6; // Lower = triggers less often (saves OpenAI calls)
       const currentScore = qualityScore(norm);
       
       // Pārbaudām vai ir kļūdas, kas nepieciešama AI labošana
@@ -762,7 +768,7 @@ app.post("/ingest-audio", async (req, res) => {
 
     // Parsēšana uz JSON
     const chat = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
+      model: "gpt-4o-mini", // Changed from gpt-4.1-mini for better performance
       temperature: 0,
       response_format: { type: "json_object" },
       messages: [
