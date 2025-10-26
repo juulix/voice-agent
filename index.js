@@ -25,8 +25,14 @@ if (process.env.SENTRY_DSN) {
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 /* ===== DATABASE SETUP ===== */
-const dbPath = path.join(process.cwd(), 'quota.db');
+// Use Railway volume if mounted, otherwise local path
+const dbPath = process.env.RAILWAY_VOLUME_MOUNT_PATH 
+  ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, 'quota.db')
+  : path.join(process.cwd(), 'quota.db');
+
 const db = new sqlite3.Database(dbPath);
+
+console.log(`💾 Database path: ${dbPath}`);
 
 // Initialize quota tracking tables
 db.serialize(() => {
@@ -421,50 +427,30 @@ function qualityScore(text) {
   return Math.max(0, Math.min(1, score));
 }
 
-/* ===== LV teksta analīzes un korekcijas AI ===== */
-const LV_ANALYSIS_PROMPT = `Tu esi latviešu valodas eksperts, kas analizē un uzlabo transkribētos tekstus. Tava uzdevums ir:
+/* ===== COMBINED LV text analysis AI ===== */
+const LV_COMBINED_ANALYSIS_PROMPT = `Tu esi latviešu valodas eksperts, kas analizē un uzlabo transkribētos tekstus. Tava uzdevums ir:
 
 1. ANALIZĒT tekstu - atpazīt vārdus, kontekstu, nozīmi
 2. IZLABOT kļūdas - gramatika, pareizrakstība, vārdu formas
 3. UZLABOT skaidrību - padarīt tekstu skaidrāku un precīzāku
 4. SAGLABĀT nozīmi - neizmainīt sākotnējo nozīmi
 
+JA TEKSTS SATUR SHOPPING VĀRDU (nopirkt, pirkt, iepirkums, veikals), pielieto šādus noteikumus:
+- Saglabāj produktu specifiku: "vājpiena" → saglabāj, "bezlaktozes" → saglabāj
+- Labo gramatikas formas: "maizīte" → "maize", "pienītis" → "piens"
+
+GRAMATIKAS KOREKCIJAS:
+- Laika vārdi: "reit" → "Rīt", "rit" → "Rīt"
+- Vārdu formas: "pulkstenis" → "pulksten", "tikšanas" → "tikšanās"
+- Shopping: "sierīņus" → "sierīņi" (akuzatīvs → nominatīvs)
+
 Atgriez TIKAI uzlaboto tekstu, bez skaidrojumiem. Temperatūra = 0.
 
 Piemēri:
 - "reit nopirkt maizi" → "Rīt nopirkt maizi"
 - "pulkstenis deviņos tikšanās" → "Pulksten deviņos tikšanās"
-- "atgādini man rīt uz darbu" → "Atgādini man rīt uz darbu"
-- "rīt no rīta uz darbu" → "Rīt no rīta uz darbu"`;
-
-/* ===== LV shopping list analīzes AI ===== */
-const LV_SHOPPING_ANALYSIS_PROMPT = `Tu esi latviešu valodas eksperts specializējies shopping list analīzē. Tava uzdevums ir:
-
-1. ATPAZĪT produktus - kas tie ir, cik daudz, kādi apraksti
-2. IZLABOT tikai gramatikas kļūdas - pareizrakstība, latviešu valodas formas
-3. SAGLABĀT produktu specifiku - brandus, aprakstus, specifiskas īpašības
-4. UZLABOT skaidrību - padarīt produktu sarakstu skaidrāku
-
-SVARĪGI - SAGLABĀT SPECIFIKU:
-- "torbu sieru" → "dore blue siers" (saprast kontekstu)
-- "vājpiena biezpienu" → "vājpiena biezpiens" (saglabāt "vājpiena")
-- "vājpiena pienu" → "vājpiena piens" (saglabāt "vājpiena")
-- "bezlaktozes jogurtu" → "bezlaktozes jogurts" (saglabāt "bezlaktozes")
-- "biezpiena sierīņus" → "biezpiena sierīņi" (saglabāt "biezpiena")
-
-Tikai labot gramatikas kļūdas:
-- "maizīte" → "maize" (vienkāršot)
-- "pienītis" → "piens" (vienkāršot)
-- "oliņas" → "olas" (vienkāršot)
-- "sierīņus" → "sierīņi" (akuzatīvs → nominatīvs)
-
-Atgriez TIKAI uzlaboto shopping tekstu, bez skaidrojumiem. Temperatūra = 0.
-
-Piemēri:
-- "nopirkt torbu sieru, biezpiena sierīņus" → "Nopirkt dore blue siers, biezpiena sierīņi"
-- "vājpiena biezpienu, vājpiena pienu" → "Vājpiena biezpiens, vājpiena piens"
-- "bezlaktozes jogurtu" → "Bezlaktozes jogurts"
-- "maizīte un pienītis" → "Maize un piens"`;
+- "nopirkt maizīte, pienītis" → "Nopirkt maize, piens"
+- "vājpiena biezpienu" → "Vājpiena biezpiens"`;
 
 /* ===== Deterministiskais LV parsētājs ===== */
 
@@ -754,41 +740,17 @@ app.post("/ingest-audio", async (req, res) => {
         console.log(`🔍 Text needs analysis (score: ${currentScore.toFixed(2)}, errors: ${hasCommonErrors})`);
         
         try {
-          // Vispārējā LV analīze
+          // Combined LV analysis (saves 1 AI call by doing both general + shopping analysis in one call)
           const analysis = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             temperature: 0,
             messages: [
-              { role: "system", content: LV_ANALYSIS_PROMPT },
+              { role: "system", content: LV_COMBINED_ANALYSIS_PROMPT },
               { role: "user", content: norm }
             ]
           });
           analyzedText = (analysis.choices?.[0]?.message?.content || norm).trim();
-          
-          // Papildu shopping list analīze, ja teksts satur shopping vārdus
-          const shoppingKeywords = ["nopirkt", "pirkt", "iepirkums", "iepirkt", "veikals", "veikalā", "pirkumu", "pirkumus"];
-          const isShoppingText = shoppingKeywords.some(keyword => 
-            analyzedText.toLowerCase().includes(keyword.toLowerCase())
-          );
-          
-          if (isShoppingText) {
-            console.log("🛒 Detected shopping text, applying shopping analysis");
-            try {
-              const shoppingAnalysis = await openai.chat.completions.create({
-                model: "gpt-4o-mini",
-                temperature: 0,
-                messages: [
-                  { role: "system", content: LV_SHOPPING_ANALYSIS_PROMPT },
-                  { role: "user", content: analyzedText }
-                ]
-              });
-              analyzedText = (shoppingAnalysis.choices?.[0]?.message?.content || analyzedText).trim();
-            } catch (e) {
-              console.warn("Shopping analysis failed, using general analysis:", e);
-            }
-          }
-          
-          console.log(`✅ Text analyzed: "${norm}" → "${analyzedText}"`);
+          console.log(`✅ Text analyzed in single call: "${norm}" → "${analyzedText}"`);
         } catch (e) {
           console.warn("LV analysis failed, using normalized text:", e);
           analyzedText = norm;
@@ -805,16 +767,33 @@ app.post("/ingest-audio", async (req, res) => {
 
     const userMsg = `currentTime=${nowISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${analyzedText}`;
 
-    // Parsēšana uz JSON
-    const chat = await openai.chat.completions.create({
-      model: "gpt-4o-mini", // Changed from gpt-4.1-mini for better performance
-      temperature: 0,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userMsg }
-      ]
-    });
+    // Parsēšana uz JSON (with retry logic)
+    let chat;
+    const maxRetries = 2;
+    let retryCount = 0;
+    
+    while (retryCount <= maxRetries) {
+      try {
+        chat = await openai.chat.completions.create({
+          model: "gpt-4o-mini", // Changed from gpt-4.1-mini for better performance
+          temperature: 0,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: userMsg }
+          ]
+        });
+        break; // Success
+      } catch (error) {
+        retryCount++;
+        if (retryCount > maxRetries) throw error;
+        
+        // Exponential backoff: 500ms, 1000ms
+        const delay = 500 * Math.pow(2, retryCount - 1);
+        console.log(`⚠️ OpenAI call failed, retrying in ${delay}ms (attempt ${retryCount}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
 
     let out;
     try {
