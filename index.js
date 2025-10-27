@@ -288,7 +288,7 @@ async function getUserUsage(userId, planHeader) {
         if (!row) {
           // Create new record
           db.run(
-            `INSERT INTO quota_usage (user_id, plan, day_key, month_key, daily_used, daily_grace_used, monthly_used) 
+            `INSERT OR IGNORE INTO quota_usage (user_id, plan, day_key, month_key, daily_used, daily_grace_used, monthly_used) 
              VALUES (?, ?, ?, ?, 0, 0, 0)`,
             [userId, limits.plan, today, mKey],
             function(err) {
