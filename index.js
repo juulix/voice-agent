@@ -449,6 +449,11 @@ const LV_COMBINED_ANALYSIS_PROMPT = `Tu esi latviešu valodas eksperts, kas anal
 3. UZLABOT skaidrību - padarīt tekstu skaidrāku un precīzāku
 4. SAGLABĀT nozīmi - neizmainīt sākotnējo nozīmi
 
+SAGLABĀT PERSONU VĀRDUS IZMANĀMUS:
+- "WhatsApp sapulce ar Silardu" → "WhatsApp sapulce ar Silardu" (NEMAINĪT)
+- "brāļiem Kalviņiem" → "brāļiem Kalviņiem" (NEMAINĪT)
+- Personīgie vārdi ar lielo burtu NEMAZ TIESĀMI ārā
+
 JA TEKSTS SATUR SHOPPING VĀRDU (nopirkt, pirkt, iepirkums, veikals), pielieto šādus noteikumus:
 - Saglabāj produktu specifiku: "vājpiena" → saglabāj, "bezlaktozes" → saglabāj
 - Labo gramatikas formas: "maizīte" → "maize", "pienītis" → "piens"
@@ -464,7 +469,9 @@ Piemēri:
 - "reit nopirkt maizi" → "Rīt nopirkt maizi"
 - "pulkstenis deviņos tikšanās" → "Pulksten deviņos tikšanās"
 - "nopirkt maizīte, pienītis" → "Nopirkt maize, piens"
-- "vājpiena biezpienu" → "Vājpiena biezpiens"`;
+- "vājpiena biezpienu" → "Vājpiena biezpiens"
+- "WhatsApp sapulce ar Silardu" → "WhatsApp sapulce ar Silardu" (personvārds saglabāts)
+- "Rīt ievest simts eiro brāļiem Kalviņiem" → "Rīt ievest simts eiro brāļiem Kalviņiem" (personvārds saglabāts)`;
 
 /* ===== Deterministiskais LV parsētājs ===== */
 
