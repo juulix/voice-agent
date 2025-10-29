@@ -492,9 +492,10 @@ Globālie noteikumi
     - JA currentTime nedēļas diena >= minēta diena → NĀKAMĀ nedēļa
   * IZŅĒMUMS: ja currentTime.datums = minētais datums → tā pat diena
 - Piemēri (JA ŠODIEN IR TREŠDIENA, diena 3):
-  * "Svētdien, 10:00" → nākamā svētdiena (diena 7, tagad 3, 7 > 3 → nākamā nedēļa)
-  * "Pirmdiena, 9:00" → nākamā nedēļas pirmdiena (diena 1, tagad 3, 1 < 3 → nākamā nedēļa)
+  * "Svētdien, 10:00" → nākamā svētdiena (diena 7, tagad 3, 7 >= 3 → nākamā nedēļa)
+  * "Pirmdiena, 9:00" → nākamā nedēļas pirmdiena (diena 1, tagad 3, 1 < 3 → BET 1 jau pagājis šajā nedēļā → nākamā nedēļa)
   * "Piektdiena, 18:00" → šī nedēļas piektdiena (diena 5, tagad 3, 5 > 3 → šī nedēļa)
+  * "Trešdiena, 12:00" → šī nedēļas trešdiena, JA laiks vēl nav pagājis, citādi nākamā trešdiena
 - Normalizē vārdus/brandus ar lielo sākumburtu; izlabo atpazīšanas kļūdas.
 - Apraksts īss un lietišķs; valoda -> lang (lv, en, ...).
 
