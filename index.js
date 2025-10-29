@@ -487,12 +487,14 @@ Globālie noteikumi
 - Nedēļas dienas: 
   * Pirmdiena = 1, Otrdiena = 2, Trešdiena = 3, Ceturtdiena = 4, Piektdiena = 5, Sestdiena = 6, Svētdiena = 7 (ISO 8601).
   * "nākamajā pirmdienā" = tuvākā nākotnes pirmdiena.
-  * JA tiek minēta nedēļas diena BEZ "nākamajā", bet ar laiku → izmanto tuvāko minēto dienu ŠO nedēļā.
-  * JA tā diena jau pagājusi šajā nedēļā → izmanto nākamo nedēļu.
-- Piemēri: 
-  * "Svētdien, 10:00" = tuvākā svētdiena 10:00 (ja šodien ir svētdiena → šodien 10:00, ja pagājusi → nākamā nedēļas svētdiena)
-  * "Sestdiena, 15:00" = tuvākā sestdiena 15:00
-  * "Pirmdiena, 9:00" = tuvākā pirmdiena 9:00
+  * JA tiek minēta nedēļas diena ar laiku → izmanto tuvāko dienu, izmantojot loģiku:
+    - JA currentTime nedēļas diena (1-7) < minēta diena (1-7) → ŠĪ nedēļa
+    - JA currentTime nedēļas diena >= minēta diena → NĀKAMĀ nedēļa
+  * IZŅĒMUMS: ja currentTime.datums = minētais datums → tā pat diena
+- Piemēri (JA ŠODIEN IR TREŠDIENA, diena 3):
+  * "Svētdien, 10:00" → nākamā svētdiena (diena 7, tagad 3, 7 > 3 → nākamā nedēļa)
+  * "Pirmdiena, 9:00" → nākamā nedēļas pirmdiena (diena 1, tagad 3, 1 < 3 → nākamā nedēļa)
+  * "Piektdiena, 18:00" → šī nedēļas piektdiena (diena 5, tagad 3, 5 > 3 → šī nedēļa)
 - Normalizē vārdus/brandus ar lielo sākumburtu; izlabo atpazīšanas kļūdas.
 - Apraksts īss un lietišķs; valoda -> lang (lv, en, ...).
 
