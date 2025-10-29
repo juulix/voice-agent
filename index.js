@@ -449,10 +449,13 @@ const LV_COMBINED_ANALYSIS_PROMPT = `Tu esi latviešu valodas eksperts, kas anal
 3. UZLABOT skaidrību - padarīt tekstu skaidrāku un precīzāku
 4. SAGLABĀT nozīmi - neizmainīt sākotnējo nozīmi
 
-SAGLABĀT PERSONU VĀRDUS IZMANĀMUS:
+SAGLABĀT PERSONU VĀRDUS, ĢIMENES RELĀCIJAS UN KONTEKSTU:
 - "WhatsApp sapulce ar Silardu" → "WhatsApp sapulce ar Silardu" (NEMAINĪT)
 - "brāļiem Kalviņiem" → "brāļiem Kalviņiem" (NEMAINĪT)
+- "pie vectētiņa", "pie vectētiņu", "pie vecmāmiņas", "pie vecākiem" → SAGLABĀT (nav "veselīšu" vai "veselības")
 - Personīgie vārdi ar lielo burtu NEMAZ TIESĀMI ārā
+- ⚠️ "vesetiņu" kontekstā ar "dzimšanas dienu", "uzņemšanas dienu" (pasākums) vai "vectētiņ"/"vecmāmiņ"/"vecāki" → "vectētiņu", NEVIS "veselīšu"
+- "veselīšu" / "veselības" izmanto TIKAI, ja konteksts skaidri norāda uz veselības iestādi (piem., "ārsts", "laboratorija", "uzņemšana veselības iestādē", BET NAV "dzimšanas diena")
 
 JA TEKSTS SATUR SHOPPING VĀRDU (nopirkt, pirkt, iepirkums, veikals), pielieto šādus noteikumus:
 - Saglabāj produktu specifiku: "vājpiena" → saglabāj, "bezlaktozes" → saglabāj
@@ -471,7 +474,9 @@ Piemēri:
 - "nopirkt maizīte, pienītis" → "Nopirkt maize, piens"
 - "vājpiena biezpienu" → "Vājpiena biezpiens"
 - "WhatsApp sapulce ar Silardu" → "WhatsApp sapulce ar Silardu" (personvārds saglabāts)
-- "Rīt ievest simts eiro brāļiem Kalviņiem" → "Rīt ievest simts eiro brāļiem Kalviņiem" (personvārds saglabāts)`;
+- "Rīt ievest simts eiro brāļiem Kalviņiem" → "Rīt ievest simts eiro brāļiem Kalviņiem" (personvārds saglabāts)
+- "pie vesetiņu uzņemšanas dienu" + konteksts "dzimšanas diena" → "pie vectētiņu uzņemšanas dienu" (ģimenes pasākums, nevis veselības iestāde)
+- "Atgādinu, ka pie vesetiņu uz dzimšanas dienu" → "Atgādinu, ka pie vectētiņu uz dzimšanas dienu" (vectētiņu, nevis veselīšu)`;
 
 /* ===== Deterministiskais LV parsētājs ===== */
 
