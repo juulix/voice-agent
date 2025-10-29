@@ -484,9 +484,15 @@ Globālie noteikumi
 - Naturālie apzīmējumi: no rīta=09:00, pusdienlaikā=12:00, pēcpusdienā=15:00, vakarā=19:00, naktī=22:00. Konflikts → diennakts daļa ir prioritāte. "pusdeviņos"=08:30.
 - Ilgumi: “1h”, “1.5h”, “45 min” → end = start + ilgums.
 - Intervāli: “no 9 līdz 11” → start=09:00, end=11:00.
-- Nedēļas dienas: “nākamajā pirmdienā” = tuvākā nākotnes pirmdiena.
-- Svētdiena/Pirmdiena/Sestdiena: Ja tiek minēta nedēļas diena BEZ "nākamajā", bet ar laiku (piemēram "Svētdien, 10:00"), izmanto šo nedēļu minētajā dienā.
-- Piemēri: "Svētdien, 10:00" = tuvākā svētdiena 10:00, "Sestdiena, 15:00" = tuvākā sestdiena 15:00.
+- Nedēļas dienas: 
+  * Pirmdiena = 1, Otrdiena = 2, Trešdiena = 3, Ceturtdiena = 4, Piektdiena = 5, Sestdiena = 6, Svētdiena = 7 (ISO 8601).
+  * "nākamajā pirmdienā" = tuvākā nākotnes pirmdiena.
+  * JA tiek minēta nedēļas diena BEZ "nākamajā", bet ar laiku → izmanto tuvāko minēto dienu ŠO nedēļā.
+  * JA tā diena jau pagājusi šajā nedēļā → izmanto nākamo nedēļu.
+- Piemēri: 
+  * "Svētdien, 10:00" = tuvākā svētdiena 10:00 (ja šodien ir svētdiena → šodien 10:00, ja pagājusi → nākamā nedēļas svētdiena)
+  * "Sestdiena, 15:00" = tuvākā sestdiena 15:00
+  * "Pirmdiena, 9:00" = tuvākā pirmdiena 9:00
 - Normalizē vārdus/brandus ar lielo sākumburtu; izlabo atpazīšanas kļūdas.
 - Apraksts īss un lietišķs; valoda -> lang (lv, en, ...).
 
