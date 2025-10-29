@@ -485,6 +485,8 @@ Globālie noteikumi
 - Ilgumi: “1h”, “1.5h”, “45 min” → end = start + ilgums.
 - Intervāli: “no 9 līdz 11” → start=09:00, end=11:00.
 - Nedēļas dienas: “nākamajā pirmdienā” = tuvākā nākotnes pirmdiena.
+- Svētdiena/Pirmdiena/Sestdiena: Ja tiek minēta nedēļas diena BEZ "nākamajā", bet ar laiku (piemēram "Svētdien, 10:00"), izmanto šo nedēļu minētajā dienā.
+- Piemēri: "Svētdien, 10:00" = tuvākā svētdiena 10:00, "Sestdiena, 15:00" = tuvākā sestdiena 15:00.
 - Normalizē vārdus/brandus ar lielo sākumburtu; izlabo atpazīšanas kļūdas.
 - Apraksts īss un lietišķs; valoda -> lang (lv, en, ...).
 
