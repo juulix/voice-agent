@@ -928,10 +928,22 @@ app.post("/ingest-audio", async (req, res) => {
 
   const userMsg = `currentTime=${nowISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${analyzedText}`;
 
-  // Feature flags via headers
-  const parserV2 = (req.header("X-Parser") || "").toLowerCase() === "v2";
-  const qcV2 = (req.header("X-Text-QC") || "").toLowerCase() === "v2";
-  const shoppingStyleList = (req.header("X-Shopping-Style") || "").toLowerCase() === "list";
+  // Feature flags via headers or allowlists (no app update required)
+  const headerParserV2 = (req.header("X-Parser") || "").toLowerCase() === "v2";
+  const headerQcV2 = (req.header("X-Text-QC") || "").toLowerCase() === "v2";
+  const headerShoppingList = (req.header("X-Shopping-Style") || "").toLowerCase() === "list";
+
+  const allowDevices = (process.env.FEATURE_ALLOWLIST_DEVICE_IDS || "")
+    .split(",").map(s => s.trim()).filter(Boolean);
+  const allowUsers = (process.env.FEATURE_ALLOWLIST_USER_IDS || "")
+    .split(",").map(s => s.trim()).filter(Boolean);
+  const deviceIdHdr = req.header("X-Device-Id") || "";
+  const userIdHdr = req.header("X-User-Id") || "";
+  const allowlisted = (allowDevices.includes(deviceIdHdr) || allowUsers.includes(userIdHdr));
+
+  const parserV2 = headerParserV2 || allowlisted;
+  const qcV2 = headerQcV2 || allowlisted;
+  const shoppingStyleList = headerShoppingList || allowlisted;
 
   // Parsēšana uz JSON (ar v2 kodā, ja ieslēgts; citādi LLM)
   if (qcV2) {
