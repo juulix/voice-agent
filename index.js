@@ -304,16 +304,46 @@ function parseWithCode(text, nowISO, langHint) {
       return d;
     }
 
-    // Time patterns
+    // Dayparts
+    const hasMorning = /\bno rīta\b/.test(lower);
+    const hasNoon = /\bpusdienlaikā\b/.test(lower);
+    const hasAfternoon = /\bpēcpusdienā\b/.test(lower);
+    const hasEvening = /\bvakarā\b/.test(lower);
+    const hasNight = /\bnaktī\b/.test(lower);
+
+    // Time patterns (numeric)
     const mHHMM = lower.match(/\b(\d{1,2}):(\d{2})\b/);
     const mHH = lower.match(/\b(\d{1,2})\b/);
     const isPusdevinos = /pusdeviņos|pusdeviņi|pus deviņos/.test(lower);
+
+    // Time patterns (word-based hours and minutes)
+    const hourWords = [
+      ['vienpadsmit', 11], ['divpadsmit', 12],
+      ['vienos', 1], ['divos', 2], ['trijos', 3], ['četros', 4], ['piecos', 5], ['sešos', 6], ['septiņos', 7], ['astoņos', 8], ['deviņos', 9], ['desmitos', 10],
+      ['viens', 1], ['divi', 2], ['trīs', 3], ['četri', 4], ['pieci', 5], ['seši', 6], ['septiņi', 7], ['astoņi', 8], ['deviņi', 9], ['desmit', 10]
+    ];
+    const minuteWords = [
+      ['trīsdesmit', 30], ['divdesmit', 20], ['piecpadsmit', 15], ['desmit', 10], ['pieci', 5]
+    ];
+    function extractWordTime(l) {
+      let h = null, m = 0;
+      for (const [w, val] of hourWords) {
+        if (l.includes(w)) { h = val; break; }
+      }
+      for (const [w, val] of minuteWords) {
+        if (l.includes(w)) { m = val; break; }
+      }
+      return h != null ? { h, m } : null;
+    }
+    const wordTime = extractWordTime(lower);
     let startDate = null; let endDate = null;
 
     // Relative day
     let baseDay = new Date(now);
     if (/\b(rīt|rītdien)\b/.test(lower)) {
       baseDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
+    } else if (/\bparīt\b/.test(lower)) {
+      baseDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2, 0, 0, 0);
     } else if (/\bšodien\b/.test(lower)) {
       baseDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
     } else {
@@ -337,12 +367,25 @@ function parseWithCode(text, nowISO, langHint) {
       const hh = parseInt(mHHMM[1], 10); const mm = parseInt(mHHMM[2], 10);
       startDate = applyTime(baseDay, hh, mm);
       endDate = applyTime(baseDay, hh + 1, mm);
+    } else if (wordTime) {
+      // Word-based time like "desmitos", "deviņos trīsdesmit"
+      startDate = applyTime(baseDay, wordTime.h, wordTime.m);
+      endDate = applyTime(baseDay, ((wordTime.h + 1) % 24), wordTime.m);
     } else if (mHH) {
       const hh = parseInt(mHH[1], 10);
       if (hh >= 0 && hh <= 23) {
         startDate = applyTime(baseDay, hh, 0);
         endDate = applyTime(baseDay, (hh + 1) % 24, 0);
       }
+    }
+
+    // If only daypart specified (no explicit time), apply defaults
+    if (!startDate) {
+      if (hasMorning) { startDate = applyTime(baseDay, 9, 0); endDate = applyTime(baseDay, 10, 0); }
+      else if (hasNoon) { startDate = applyTime(baseDay, 12, 0); endDate = applyTime(baseDay, 13, 0); }
+      else if (hasAfternoon) { startDate = applyTime(baseDay, 15, 0); endDate = applyTime(baseDay, 16, 0); }
+      else if (hasEvening) { startDate = applyTime(baseDay, 19, 0); endDate = applyTime(baseDay, 20, 0); }
+      else if (hasNight) { startDate = applyTime(baseDay, 22, 0); endDate = applyTime(baseDay, 23, 0); }
     }
 
     if (startDate) {
