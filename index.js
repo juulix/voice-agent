@@ -256,6 +256,111 @@ function toRigaISO(d) {
   const mm = String(abs % 60).padStart(2, "0");
   return `${o.year}-${o.month}-${o.day}T${o.hour}:${o.minute}:${o.second}${sign}${hh}:${mm}`;
 }
+
+// ===== Simple deterministic LV parser (v2 under flag) =====
+function parseWithCode(text, nowISO, langHint) {
+  try {
+    const tz = "Europe/Riga";
+    const now = new Date(nowISO);
+    const t = (text || "").trim();
+    const lower = t.toLowerCase();
+
+    // Shopping detection
+    const isShopping = /(nopirkt|pirkt|iepirk|veikal)/i.test(lower);
+    if (isShopping) {
+      // Extract items by splitting on commas/semicolons and removing trigger words
+      const rawItems = t
+        .replace(/\b(nopirkt|pirkt|iepirkt|iepirkums|veikal[sa]?|veikalam)\b/gi, "")
+        .split(/[;,]/)
+        .map(s => s.trim())
+        .filter(Boolean);
+      const items = rawItems.join(", ");
+      return { type: 'shopping', lang: (langHint || 'lv'), items, description: 'Pirkumu saraksts' };
+    }
+
+    // Helpers for day words
+    const dayMap = {
+      'pirmdien': 1, 'pirmdiena': 1, 'pirmdienu': 1,
+      'otrdien': 2, 'otrdiena': 2, 'otrdienu': 2,
+      'trešdien': 3, 'trešdiena': 3, 'trešdienu': 3,
+      'ceturtdien': 4, 'ceturtdiena': 4, 'ceturtdienu': 4,
+      'piektdien': 5, 'piektdiena': 5, 'piektdienu': 5,
+      'sestdien': 6, 'sestdiena': 6, 'sestdienu': 6,
+      'svētdien': 7, 'svētdiena': 7, 'svētdienu': 7
+    };
+
+    function nextWeekdayDate(current, targetIsoDay) {
+      const cur = new Date(current);
+      const curIsoDay = ((cur.getDay() + 6) % 7) + 1; // 1..7
+      let offset = targetIsoDay - curIsoDay;
+      if (offset <= 0) offset += 7;
+      const d = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + offset, 0, 0, 0);
+      return d;
+    }
+
+    function applyTime(baseDate, hh, mm) {
+      const d = new Date(baseDate);
+      d.setHours(hh, mm || 0, 0, 0);
+      return d;
+    }
+
+    // Time patterns
+    const mHHMM = lower.match(/\b(\d{1,2}):(\d{2})\b/);
+    const mHH = lower.match(/\b(\d{1,2})\b/);
+    const isPusdevinos = /pusdeviņos|pusdeviņi|pus deviņos/.test(lower);
+    let startDate = null; let endDate = null;
+
+    // Relative day
+    let baseDay = new Date(now);
+    if (/\b(rīt|rītdien)\b/.test(lower)) {
+      baseDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
+    } else if (/\bšodien\b/.test(lower)) {
+      baseDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+    } else {
+      const dayWord = Object.keys(dayMap).find(w => lower.includes(w));
+      if (dayWord) {
+        baseDay = nextWeekdayDate(now, dayMap[dayWord]);
+      }
+    }
+
+    // Interval: "no 9 līdz 11" or "no 09:00 līdz 11:00"
+    const mInterval = lower.match(/no\s+(\d{1,2})(?::(\d{2}))?\s+līdz\s+(\d{1,2})(?::(\d{2}))?/);
+    if (mInterval) {
+      const sh = parseInt(mInterval[1], 10); const sm = mInterval[2] ? parseInt(mInterval[2], 10) : 0;
+      const eh = parseInt(mInterval[3], 10); const em = mInterval[4] ? parseInt(mInterval[4], 10) : 0;
+      startDate = applyTime(baseDay, sh, sm);
+      endDate = applyTime(baseDay, eh, em);
+    } else if (isPusdevinos) {
+      startDate = applyTime(baseDay, 8, 30);
+      endDate = applyTime(baseDay, 9, 30);
+    } else if (mHHMM) {
+      const hh = parseInt(mHHMM[1], 10); const mm = parseInt(mHHMM[2], 10);
+      startDate = applyTime(baseDay, hh, mm);
+      endDate = applyTime(baseDay, hh + 1, mm);
+    } else if (mHH) {
+      const hh = parseInt(mHH[1], 10);
+      if (hh >= 0 && hh <= 23) {
+        startDate = applyTime(baseDay, hh, 0);
+        endDate = applyTime(baseDay, (hh + 1) % 24, 0);
+      }
+    }
+
+    if (startDate) {
+      const startISO = toRigaISO(startDate);
+      const endISO = toRigaISO(endDate || new Date(startDate.getTime() + 60 * 60 * 1000));
+      // Heuristic type: if text mentions atgādināt/reminder
+      const isReminder = /(atgādin|reminder)/i.test(lower);
+      const out = isReminder
+        ? { type: 'reminder', lang: (langHint || 'lv'), start: startISO, description: t, hasTime: true }
+        : { type: 'calendar', lang: (langHint || 'lv'), start: startISO, end: endISO, description: t };
+      return out;
+    }
+
+    return null;
+  } catch (_e) {
+    return null;
+  }
+}
 function guessMime(filename) {
   const f = (filename || "").toLowerCase();
   if (f.endsWith(".m4a") || f.endsWith(".mp4")) return "audio/mp4";
@@ -773,12 +878,21 @@ app.post("/ingest-audio", async (req, res) => {
       const qualityThreshold = 0.6; // Lower = triggers less often (saves OpenAI calls)
       const currentScore = qualityScore(norm);
       
-      // Pārbaudām vai ir kļūdas, kas nepieciešama AI labošana
-      const hasCommonErrors = /[āčēģīķļņšūž]/.test(norm) || // diakritiskās zīmes
-                              norm !== norm.toLowerCase() || // mazie burti
-                              norm.includes("maizīte") || norm.includes("pienītis") || // zināmās kļūdas
-                              norm.includes("reit") || norm.includes("rit") || // laika kļūdas
-                              currentScore < qualityThreshold;
+    // Pārbaudām vai ir kļūdas, kas nepieciešama AI labošana
+    // QC v2: neuzskata diakritikas/lielos burtus par kļūdu; fokusējas uz konkrētām kļūdām + zemu score
+    const hasCommonErrors = ((req.header("X-Text-QC") || "").toLowerCase() === "v2")
+      ? (
+          norm.includes("maizīte") || norm.includes("pienītis") ||
+          norm.includes("reit") || norm.includes("rit") ||
+          currentScore < qualityThreshold
+        )
+      : (
+          /[āčēģīķļņšūž]/.test(norm) ||
+          norm !== norm.toLowerCase() ||
+          norm.includes("maizīte") || norm.includes("pienītis") ||
+          norm.includes("reit") || norm.includes("rit") ||
+          currentScore < qualityThreshold
+        );
       
       needsAnalysis = hasCommonErrors;
       
@@ -812,9 +926,59 @@ app.post("/ingest-audio", async (req, res) => {
     const tmr = new Date(Date.now() + 24 * 3600 * 1000);
     const tomorrowISO = fields.tomorrowExample || toRigaISO(new Date(tmr.getFullYear(), tmr.getMonth(), tmr.getDate(), 0, 0, 0));
 
-    const userMsg = `currentTime=${nowISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${analyzedText}`;
+  const userMsg = `currentTime=${nowISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${analyzedText}`;
 
-    // Parsēšana uz JSON (with retry logic)
+  // Feature flags via headers
+  const parserV2 = (req.header("X-Parser") || "").toLowerCase() === "v2";
+  const qcV2 = (req.header("X-Text-QC") || "").toLowerCase() === "v2";
+  const shoppingStyleList = (req.header("X-Shopping-Style") || "").toLowerCase() === "list";
+
+  // Parsēšana uz JSON (ar v2 kodā, ja ieslēgts; citādi LLM)
+  if (qcV2) {
+    // hasCommonErrors v2: no diacritics/lowercase heuristics; rely on concrete fixes + score
+    // Already achieved by not altering analyzedText here; we just log the mode
+    console.log(`🧪 QC v2 enabled`);
+  }
+
+  if (parserV2) {
+    const parsed = parseWithCode(analyzedText, nowISO, langHint);
+    if (parsed) {
+      parsed.raw_transcript = raw;
+      parsed.normalized_transcript = norm;
+      parsed.analyzed_transcript = analyzedText;
+      parsed.analysis_applied = needsAnalysis;
+      parsed.confidence = score;
+      if (parsed.type === 'shopping' && shoppingStyleList) {
+        parsed.description = parsed.description || 'Pirkumu saraksts';
+      }
+      // Kvotu skaitīšana un atbilde kā zemāk (kopējam no success ceļa)
+      u.daily.used += 1;
+      operationsTotal.inc({ status: "success", plan: limits.plan }, 1);
+      await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
+      databaseOperations.inc({ operation: "update", table: "quota_usage" }, 1);
+      quotaUsage.inc({ plan: limits.plan, type: "daily" }, 1);
+      if (limits.plan === "pro") { quotaUsage.inc({ plan: limits.plan, type: "monthly" }, 1); }
+      parsed.quota = {
+        plan: limits.plan,
+        dailyLimit: normalizeDaily(limits.dailyLimit),
+        dailyUsed: u.daily.used,
+        dailyRemaining: limits.dailyLimit >= 999999 ? null : Math.max(0, limits.dailyLimit - u.daily.used),
+        dailyGraceLimit: GRACE_DAILY,
+        dailyGraceUsed: u.daily.graceUsed
+      };
+      if (limits.plan === 'pro') {
+        parsed.quota.monthlyLimit = limits.monthlyLimit;
+        parsed.quota.monthlyUsed = u.monthly.used;
+        parsed.quota.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
+      }
+      parsed.requestId = req.requestId;
+      const processingTime = Date.now() - processingStart;
+      audioProcessingTime.observe({ status: "success" }, processingTime);
+      return res.json(parsed);
+    }
+  }
+
+  // Ja v2 neizdevās vai nav ieslēgts – krītam atpakaļ uz LLM
     let chat;
     const maxRetries = 2;
     let retryCount = 0;
