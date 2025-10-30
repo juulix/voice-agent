@@ -707,19 +707,24 @@ app.post("/ingest-audio", async (req, res) => {
     let fileBuf = Buffer.alloc(0);
     let filename = "audio.m4a";
     const bb = Busboy({ headers: req.headers, limits: { files: 1, fileSize: 8 * 1024 * 1024 } });
+    let fileTooLarge = false;
 
     await new Promise((resolve, reject) => {
       bb.on("field", (name, val) => { fields[name] = val; });
       bb.on("file", (_name, stream, info) => {
         filename = info?.filename || filename;
         stream.on("data", (d) => { fileBuf = Buffer.concat([fileBuf, d]); });
-        stream.on("limit", () => reject(new Error("file_too_large")));
+        stream.on("limit", () => { fileTooLarge = true; stream.resume(); });
         stream.on("end", () => {});
       });
       bb.on("error", reject);
       bb.on("finish", resolve);
       req.pipe(bb);
     });
+
+    if (fileTooLarge) {
+      return res.status(413).json({ error: "file_too_large", requestId: req.requestId });
+    }
 
     if (!fileBuf.length) return res.status(400).json({ error: "file_missing" });
 
@@ -730,6 +735,8 @@ app.post("/ingest-audio", async (req, res) => {
     // Minimāla runas aktivitāte (pirms maksas transkripcijas)
     if (vadActiveSeconds < 0.3 || recordingDurationSeconds < 0.6) {
       if (u.daily.graceUsed < GRACE_DAILY) u.daily.graceUsed += 1;
+      await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
+      databaseOperations.inc({ operation: "update", table: "quota_usage" }, 1);
       return res.status(422).json({ error: "no_speech_detected_client", details: { vadActiveSeconds, recordingDurationSeconds } });
     }
 
@@ -747,6 +754,8 @@ app.post("/ingest-audio", async (req, res) => {
 
     if (norm.length < 2 || score < 0.35) {
       if (u.daily.graceUsed < GRACE_DAILY) u.daily.graceUsed += 1;
+      await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
+      databaseOperations.inc({ operation: "update", table: "quota_usage" }, 1);
       return res.status(422).json({
         error: "low_confidence_transcript",
         score,
