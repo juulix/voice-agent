@@ -243,18 +243,18 @@ function monthKeyRiga(d = new Date()) {
 }
 function toRigaISO(d) {
   const tz = "Europe/Riga";
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
-  }).formatToParts(d);
-  const o = Object.fromEntries(parts.map(p => [p.type, p.value]));
-  const local = Date.parse(`${o.year}-${o.month}-${o.day}T${o.hour}:${o.minute}:${o.second}Z`);
-  const offsetMin = Math.round((local - d.getTime()) / 60000);
-  const sign = offsetMin >= 0 ? "+" : "-";
-  const abs = Math.abs(offsetMin);
-  const hh = String(Math.floor(abs / 60)).padStart(2, "0");
-  const mm = String(abs % 60).padStart(2, "0");
-  return `${o.year}-${o.month}-${o.day}T${o.hour}:${o.minute}:${o.second}${sign}${hh}:${mm}`;
+  const dtf = new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+    timeZoneName: "shortOffset" // e.g., GMT+02:00
+  });
+  const partsArr = dtf.formatToParts(d);
+  const parts = Object.fromEntries(partsArr.map(p => [p.type, p.value]));
+  // parts.timeZoneName like "GMT+02:00" → extract "+02:00"
+  const offset = (parts.timeZoneName || "GMT+00:00").replace(/^GMT/, "");
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${offset}`;
 }
 
 // ===== Simple deterministic LV parser (v2 under flag) =====
