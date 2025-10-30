@@ -953,8 +953,10 @@ app.post("/ingest-audio", async (req, res) => {
   }
 
   if (parserV2) {
+    console.log(`🧭 Parser v2 attempting parse`);
     const parsed = parseWithCode(analyzedText, nowISO, langHint);
     if (parsed) {
+      console.log(`🧭 Parser v2 used`);
       parsed.raw_transcript = raw;
       parsed.normalized_transcript = norm;
       parsed.analyzed_transcript = analyzedText;
