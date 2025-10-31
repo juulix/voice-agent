@@ -338,11 +338,11 @@ function parseWithCode(text, nowISO, langHint) {
     const wordTime = extractWordTime(lower);
     let startDate = null; let endDate = null;
 
-    // Relative day
+    // Relative day (atpazīt arī vārda formas "rīta", "parīt")
     let baseDay = new Date(now);
-    if (/\b(rīt|rītdien)\b/.test(lower)) {
+    if (/\b(rīt|rītdien|rīta)\b/.test(lower)) {
       baseDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
-    } else if (/\bparīt\b/.test(lower)) {
+    } else if (/\b(parīt|parītdien)\b/.test(lower)) {
       baseDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2, 0, 0, 0);
     } else if (/\bšodien\b/.test(lower)) {
       baseDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
@@ -363,14 +363,14 @@ function parseWithCode(text, nowISO, langHint) {
     } else if (isPusdevinos) {
       startDate = applyTime(baseDay, 8, 30);
       endDate = applyTime(baseDay, 9, 30);
+    } else if (wordTime) {
+      // Prioritizēt vārdiskos laikus (desmitos, deviņos trīsdesmit) pirms skaitliskajiem
+      startDate = applyTime(baseDay, wordTime.h, wordTime.m);
+      endDate = applyTime(baseDay, ((wordTime.h + 1) % 24), wordTime.m);
     } else if (mHHMM) {
       const hh = parseInt(mHHMM[1], 10); const mm = parseInt(mHHMM[2], 10);
       startDate = applyTime(baseDay, hh, mm);
       endDate = applyTime(baseDay, hh + 1, mm);
-    } else if (wordTime) {
-      // Word-based time like "desmitos", "deviņos trīsdesmit"
-      startDate = applyTime(baseDay, wordTime.h, wordTime.m);
-      endDate = applyTime(baseDay, ((wordTime.h + 1) % 24), wordTime.m);
     } else if (mHH) {
       const hh = parseInt(mHH[1], 10);
       if (hh >= 0 && hh <= 23) {
@@ -379,13 +379,24 @@ function parseWithCode(text, nowISO, langHint) {
       }
     }
 
-    // If only daypart specified (no explicit time), apply defaults
+    // Ja nav konkrēta laika, bet ir diennakts daļa, lietot defaults
     if (!startDate) {
-      if (hasMorning) { startDate = applyTime(baseDay, 9, 0); endDate = applyTime(baseDay, 10, 0); }
-      else if (hasNoon) { startDate = applyTime(baseDay, 12, 0); endDate = applyTime(baseDay, 13, 0); }
-      else if (hasAfternoon) { startDate = applyTime(baseDay, 15, 0); endDate = applyTime(baseDay, 16, 0); }
-      else if (hasEvening) { startDate = applyTime(baseDay, 19, 0); endDate = applyTime(baseDay, 20, 0); }
-      else if (hasNight) { startDate = applyTime(baseDay, 22, 0); endDate = applyTime(baseDay, 23, 0); }
+      if (hasMorning && !wordTime && !mHHMM && !mHH) {
+        startDate = applyTime(baseDay, 9, 0);
+        endDate = applyTime(baseDay, 10, 0);
+      } else if (hasNoon) {
+        startDate = applyTime(baseDay, 12, 0);
+        endDate = applyTime(baseDay, 13, 0);
+      } else if (hasAfternoon) {
+        startDate = applyTime(baseDay, 15, 0);
+        endDate = applyTime(baseDay, 16, 0);
+      } else if (hasEvening) {
+        startDate = applyTime(baseDay, 19, 0);
+        endDate = applyTime(baseDay, 20, 0);
+      } else if (hasNight) {
+        startDate = applyTime(baseDay, 22, 0);
+        endDate = applyTime(baseDay, 23, 0);
+      }
     }
 
     if (startDate) {
@@ -996,10 +1007,10 @@ app.post("/ingest-audio", async (req, res) => {
   }
 
   if (parserV2) {
-    console.log(`🧭 Parser v2 attempting parse`);
+    console.log(`🧭 Parser v2 attempting parse: "${analyzedText}"`);
     const parsed = parseWithCode(analyzedText, nowISO, langHint);
     if (parsed) {
-      console.log(`🧭 Parser v2 used`);
+      console.log(`🧭 Parser v2 used: type=${parsed.type}, start=${parsed.start}, end=${parsed.end || 'none'}`);
       parsed.raw_transcript = raw;
       parsed.normalized_transcript = norm;
       parsed.analyzed_transcript = analyzedText;
