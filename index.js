@@ -899,12 +899,29 @@ app.post("/ingest-audio", async (req, res) => {
       return res.status(422).json({ error: "no_speech_detected_client", details: { vadActiveSeconds, recordingDurationSeconds } });
     }
 
-    // Transcribe (OpenAI)
+    // Transcribe (OpenAI) with retry logic
     const file = await toFile(fileBuf, filename, { type: guessMime(filename) });
-    const tr = await openai.audio.transcriptions.create({
-      model: "gpt-4o-mini-transcribe",
-      file
-    });
+    let tr;
+    const transcriptionMaxRetries = 3;
+    let transcriptionRetryCount = 0;
+    
+    while (transcriptionRetryCount <= transcriptionMaxRetries) {
+      try {
+        tr = await openai.audio.transcriptions.create({
+          model: "gpt-4o-mini-transcribe",
+          file
+        });
+        break; // Success
+      } catch (error) {
+        transcriptionRetryCount++;
+        if (transcriptionRetryCount > transcriptionMaxRetries) throw error;
+        
+        // Exponential backoff: 500ms, 1000ms, 2000ms
+        const delay = 500 * Math.pow(2, transcriptionRetryCount - 1);
+        console.log(`⚠️ Transcription failed (${error.code || error.type}), retrying in ${delay}ms (attempt ${transcriptionRetryCount}/${transcriptionMaxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
 
     // Normalizācija + kvalitātes pārbaude
     const raw = (tr.text || "").trim();
