@@ -24,6 +24,77 @@ if (process.env.SENTRY_DSN) {
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
+/* ===== OPENAI HELPER FUNCTIONS ===== */
+// Models that don't support temperature parameter (only default 1)
+const FIXED_TEMP_MODELS = new Set([
+  "gpt-4o-mini-transcribe",
+  "gpt-5-mini",
+  "gpt-realtime",
+  // Add other fixed-temp models here as needed
+]);
+
+/**
+ * Build OpenAI API parameters with automatic temperature handling
+ * @param {Object} params - API parameters
+ * @param {string} params.model - Model name
+ * @param {Array} params.messages - Messages array
+ * @param {string} [params.system] - System message (alternative to messages)
+ * @param {boolean} [params.json=false] - Use JSON response format
+ * @param {number} [params.max=300] - Max completion tokens
+ * @param {number|null} [params.temperature=0] - Temperature (0-2), null to omit
+ * @returns {Object} OpenAI API parameters
+ */
+function buildParams({ model, messages, system, json = false, max = 300, temperature = 0 }) {
+  const p = {
+    model,
+    max_completion_tokens: max,
+  };
+
+  if (messages) p.messages = messages;
+  if (system) {
+    // If system is provided separately, prepend it to messages or create new messages array
+    if (!messages) {
+      p.messages = [{ role: "system", content: system }];
+    } else {
+      // Prepend system message if not already present
+      const hasSystem = messages.some(m => m.role === "system");
+      if (!hasSystem) {
+        p.messages = [{ role: "system", content: system }, ...messages];
+      }
+    }
+  }
+
+  if (json) p.response_format = { type: "json_object" };
+
+  // Only include temperature if the model allows it
+  if (!FIXED_TEMP_MODELS.has(model) && temperature != null) {
+    p.temperature = temperature;
+  }
+
+  return p;
+}
+
+/**
+ * Safe OpenAI API call with automatic temperature retry
+ * @param {Object} params - OpenAI API parameters
+ * @returns {Promise} OpenAI API response
+ */
+async function safeCreate(params) {
+  try {
+    return await openai.chat.completions.create(params);
+  } catch (e) {
+    const msg = e?.error?.message || e?.message || "";
+    if (msg.includes("temperature") && msg.includes("Only the default (1) value is supported")) {
+      // Retry without temperature parameter
+      const clone = { ...params };
+      delete clone.temperature;
+      console.log(`⚠️ Temperature not supported for ${params.model}, retrying without temperature`);
+      return await openai.chat.completions.create(clone);
+    }
+    throw e;
+  }
+}
+
 /* ===== DATABASE SETUP ===== */
 // Use Railway volume if mounted, otherwise local path
 const dbPath = process.env.RAILWAY_VOLUME_MOUNT_PATH 
@@ -1024,15 +1095,17 @@ app.post("/ingest-audio", async (req, res) => {
         
         try {
           // Combined LV analysis (saves 1 AI call by doing both general + shopping analysis in one call)
-          const analysis = await openai.chat.completions.create({
-            model: "gpt-5-mini", // Testing GPT-5 mini
-            temperature: 0,
-            max_completion_tokens: 200, // GPT-5 mini uses max_completion_tokens instead of max_tokens
-            messages: [
-              { role: "system", content: LV_COMBINED_ANALYSIS_PROMPT },
-              { role: "user", content: norm }
-            ]
-          });
+          const analysis = await safeCreate(
+            buildParams({
+              model: "gpt-5-mini",
+              messages: [
+                { role: "system", content: LV_COMBINED_ANALYSIS_PROMPT },
+                { role: "user", content: norm }
+              ],
+              max: 200,
+              temperature: 0
+            })
+          );
           analyzedText = (analysis.choices?.[0]?.message?.content || norm).trim();
           console.log(`✅ Text analyzed in single call: "${norm}" → "${analyzedText}"`);
         } catch (e) {
@@ -1126,16 +1199,18 @@ app.post("/ingest-audio", async (req, res) => {
     
     while (retryCount <= maxRetries) {
       try {
-        chat = await openai.chat.completions.create({
-          model: "gpt-5-mini", // Testing GPT-5 mini
-          temperature: 0,
-          response_format: { type: "json_object" },
-          max_completion_tokens: 300, // GPT-5 mini uses max_completion_tokens instead of max_tokens
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userMsg }
-          ]
-        });
+        chat = await safeCreate(
+          buildParams({
+            model: "gpt-5-mini",
+            messages: [
+              { role: "system", content: SYSTEM_PROMPT },
+              { role: "user", content: userMsg }
+            ],
+            json: true,
+            max: 300,
+            temperature: 0
+          })
+        );
         break; // Success
       } catch (error) {
         retryCount++;
