@@ -367,16 +367,8 @@ function normalizeForParser(text) {
   let normalized = text;
   // Labo relatīvo dienu kļūdas (bet ne personvārdus)
   // "Rītu" kā personvārds parasti ir ar lielo burtu un pirms tam ir cits vārds (piem., "ar Jāni Rītu")
-  normalized = normalized.replace(/\b([Rr]ītu|[Rr]it)\b/g, (match, p1, offset) => {
-    // Pārbaudām, vai nav personvārds - ja pirms tam ir vārds ar lielo burtu (piem., "Jāni Rītu")
-    if (offset > 0) {
-      const beforeMatch = text.substring(Math.max(0, offset - 20), offset);
-      // Ja pirms tam ir lielais burts (personvārds), atstāj kā ir
-      if (/[A-ZĀČĒĢĪĶĻŅŠŪŽ][a-zāčēģīķļņšūž]+\s+[Rr]ītu/.test(beforeMatch + match)) {
-        return match; // Atstāj kā ir (personvārds, piem., "Jāni Rītu")
-      }
-    }
-    // Citādi - labo uz "rīt"
+  // "Rītu", "rit", "reit" → "rīt" (vienmēr, jo "Rītu" nav personvārds, bet nozīmē "rīt")
+  normalized = normalized.replace(/\b([Rr]ītu|[Rr]it|[Rr]eit)\b/gi, (match) => {
     return match.charAt(0) === 'R' ? 'Rīt' : 'rīt';
   });
   // Labo citas biežas kļūdas
@@ -505,10 +497,12 @@ function parseWithCode(text, nowISO, langHint) {
       endDate = applyTime(baseDay, ((wordTime.h + 1) % 24), wordTime.m);
       console.log(`🔍 Parser v2: startDate=${startDate ? startDate.toISOString() : 'null'}, endDate=${endDate ? endDate.toISOString() : 'null'}`);
     } else if (mHHMM) {
+      // Explicit laiks (10:00) - prioritizē pirms day-part defaults
       const hh = parseInt(mHHMM[1], 10); const mm = parseInt(mHHMM[2], 10);
       startDate = applyTime(baseDay, hh, mm);
       endDate = applyTime(baseDay, hh + 1, mm);
     } else if (mHH) {
+      // Explicit laiks (10) - prioritizē pirms day-part defaults
       const hh = parseInt(mHH[1], 10);
       if (hh >= 0 && hh <= 23) {
         startDate = applyTime(baseDay, hh, 0);
@@ -516,21 +510,22 @@ function parseWithCode(text, nowISO, langHint) {
       }
     }
 
-    // Ja nav konkrēta laika, bet ir diennakts daļa, lietot defaults
+    // Ja nav explicit laika (wordTime, mHHMM, mHH), bet ir diennakts daļa, lietot defaults
+    // SVARĪGI: day-part defaults tikai ja NAV explicit laika
     if (!startDate) {
       if (hasMorning && !wordTime && !mHHMM && !mHH) {
         startDate = applyTime(baseDay, 9, 0);
         endDate = applyTime(baseDay, 10, 0);
-      } else if (hasNoon) {
+      } else if (hasNoon && !wordTime && !mHHMM && !mHH) {
         startDate = applyTime(baseDay, 12, 0);
         endDate = applyTime(baseDay, 13, 0);
-      } else if (hasAfternoon) {
+      } else if (hasAfternoon && !wordTime && !mHHMM && !mHH) {
         startDate = applyTime(baseDay, 15, 0);
         endDate = applyTime(baseDay, 16, 0);
-      } else if (hasEvening) {
+      } else if (hasEvening && !wordTime && !mHHMM && !mHH) {
         startDate = applyTime(baseDay, 19, 0);
         endDate = applyTime(baseDay, 20, 0);
-      } else if (hasNight) {
+      } else if (hasNight && !wordTime && !mHHMM && !mHH) {
         startDate = applyTime(baseDay, 22, 0);
         endDate = applyTime(baseDay, 23, 0);
       }
