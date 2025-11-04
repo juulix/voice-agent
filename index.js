@@ -481,10 +481,10 @@ function parseWithCode(text, nowISO, langHint) {
       }
       return h != null ? { h, m } : null;
     }
-    const wordTime = extractWordTime(lower);
     let startDate = null; let endDate = null;
 
     // Relative day (atpazīt arī vārda formas "rīta", "parīt")
+    // Iestatīt baseDay PIRMS wordTime, lai varētu izmantot debug logiem
     let baseDay = new Date(now);
     if (/\b(rīt|rītdien|rīta)\b/.test(lower)) {
       baseDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
@@ -498,6 +498,11 @@ function parseWithCode(text, nowISO, langHint) {
         baseDay = nextWeekdayDate(now, dayMap[dayWord]);
       }
     }
+    
+    const wordTime = extractWordTime(lower);
+    
+    // Debug: log parser state (vienmēr, lai redzētu kas notiek)
+    console.log(`🔍 Parser v2 state: text="${t.substring(0, 50)}", wordTime=${JSON.stringify(wordTime)}, baseDay=${baseDay.toISOString().substring(0, 10)}, hasRelativeDay=${/\b(rīt|rītdien|rīta|parīt|šodien)\b/.test(lower)}`);
 
     // Interval: "no 9 līdz 11" or "no 09:00 līdz 11:00"
     const mInterval = lower.match(/no\s+(\d{1,2})(?::(\d{2}))?\s+līdz\s+(\d{1,2})(?::(\d{2}))?/);
@@ -549,13 +554,19 @@ function parseWithCode(text, nowISO, langHint) {
       const startISO = toRigaISO(startDate);
       const endISO = toRigaISO(endDate || new Date(startDate.getTime() + 60 * 60 * 1000));
       // Heuristic type: if text mentions atgādināt/reminder, vai ja nav end (vienkāršs reminders)
-      const isReminder = /(atgādin|reminder)/i.test(lower) || !endDate;
+      // Ja nav explicit "calendar" vai "event" keywords, default uz reminder, ja ir laiks
+      const isReminder = /(atgādin|reminder)/i.test(lower) || (!/(sapulce|tikšanās|event|meeting)/i.test(lower) && !endDate);
       const out = isReminder
         ? { type: 'reminder', lang: (langHint || 'lv'), start: startISO, description: t, hasTime: true, confidence: 0.9 }
         : { type: 'calendar', lang: (langHint || 'lv'), start: startISO, end: endISO, description: t, confidence: 0.9 };
       return out;
     }
 
+    // Debug: log why parser failed
+    if (process.env.DEBUG_PARSER || false) {
+      console.log(`🔍 Parser v2 failed: no startDate, wordTime=${JSON.stringify(wordTime)}, baseDay=${baseDay.toISOString()}, hasMorning=${hasMorning}, hasNoon=${hasNoon}`);
+    }
+    
     return null;
   } catch (_e) {
     return null;
@@ -1341,7 +1352,7 @@ app.post("/ingest-audio", async (req, res) => {
         const messages = [
           { 
             role: "system", 
-            content: SYSTEM_PROMPT + "\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu pēc shēmas. Nav markdown, nav ```json```, tikai tīrs JSON ar type, lang, description, start, hasTime (vai end calendar gadījumā)."
+            content: SYSTEM_PROMPT + `\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu pēc shēmas. Nav markdown, nav \`\`\`json\`\`\`, tikai tīrs JSON ar type, lang, description, start, hasTime (vai end calendar gadījumā).\n\nTagadējais datums un laiks: ${nowISO} (Europe/Riga).`
           },
           { role: "user", content: userMsg }
         ];
@@ -1482,7 +1493,7 @@ app.post("/ingest-audio", async (req, res) => {
               const canaryMessages = [
                 { 
                   role: "system", 
-                  content: SYSTEM_PROMPT + "\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu ar type, lang, description, start, hasTime. Nav markdown, tikai tīrs JSON."
+                  content: SYSTEM_PROMPT + `\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu ar type, lang, description, start, hasTime. Nav markdown, tikai tīrs JSON.\n\nTagadējais datums un laiks: ${nowISO} (Europe/Riga).`
                 },
                 { role: "user", content: analyzedText }
               ];
@@ -1518,7 +1529,7 @@ app.post("/ingest-audio", async (req, res) => {
             const canaryMessages = [
               { 
                 role: "system", 
-                content: SYSTEM_PROMPT + "\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu ar type, lang, description, start, hasTime. Nav markdown, tikai tīrs JSON."
+                content: SYSTEM_PROMPT + `\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu ar type, lang, description, start, hasTime. Nav markdown, tikai tīrs JSON.\n\nTagadējais datums un laiks: ${nowISO} (Europe/Riga).`
               },
               { role: "user", content: analyzedText }
             ];
@@ -1557,7 +1568,7 @@ app.post("/ingest-audio", async (req, res) => {
         const canaryMessages = [
           { 
             role: "system", 
-            content: SYSTEM_PROMPT + "\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu ar type, lang, description, start, hasTime. Nav markdown, tikai tīrs JSON."
+            content: SYSTEM_PROMPT + `\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu ar type, lang, description, start, hasTime. Nav markdown, tikai tīrs JSON.\n\nTagadējais datums un laiks: ${nowISO} (Europe/Riga).`
           },
           { role: "user", content: analyzedText }
         ];
