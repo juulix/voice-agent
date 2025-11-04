@@ -818,6 +818,50 @@ app.get("/quota", async (req, res) => {
   }
 });
 
+/* ===== HELPER FUNCTIONS ===== */
+
+// Log transcript flow for debugging
+function logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, score, out) {
+  const requestId = req.requestId.slice(-8);
+  const isError = res.statusCode >= 400;
+  const debugMode = process.env.DEBUG_TRANSCRIPT === 'true';
+  
+  // Kompakts log (vienmēr)
+  const whisperShort = raw.length > 50 ? raw.slice(0, 50) + '...' : raw;
+  const analyzedShort = analyzedText.length > 50 ? analyzedText.slice(0, 50) + '...' : analyzedText;
+  const finalShort = out.description?.length > 50 ? out.description.slice(0, 50) + '...' : (out.description || 'N/A');
+  
+  let logLine = `📝 [${requestId}] W:"${whisperShort}"`;
+  if (needsAnalysis) {
+    logLine += ` → GPT:"${analyzedShort}"`;
+  }
+  logLine += ` → Client:${out.type}:"${finalShort}"`;
+  
+  console.log(logLine);
+  
+  // Detalizēts log (ja DEBUG_TRANSCRIPT vai error)
+  if (debugMode || isError) {
+    console.log(JSON.stringify({
+      requestId: req.requestId,
+      transcriptFlow: {
+        whisper: raw,
+        normalized: norm,
+        analyzed: analyzedText,
+        analysisApplied: needsAnalysis,
+        confidence: score,
+        final: {
+          type: out.type,
+          description: out.description,
+          start: out.start,
+          end: out.end,
+          hasTime: out.hasTime,
+          items: out.items
+        }
+      }
+    }, null, 2));
+  }
+}
+
 /* ===== POST /ingest-audio ===== */
 app.post("/ingest-audio", async (req, res) => {
   const processingStart = Date.now();
@@ -1059,6 +1103,10 @@ app.post("/ingest-audio", async (req, res) => {
       parsed.requestId = req.requestId;
       const processingTime = Date.now() - processingStart;
       audioProcessingTime.observe({ status: "success" }, processingTime);
+      
+      // Log transcript flow
+      logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, score, parsed);
+      
       return res.json(parsed);
     }
   }
@@ -1154,6 +1202,9 @@ app.post("/ingest-audio", async (req, res) => {
     // Track successful processing time
     const processingTime = Date.now() - processingStart;
     audioProcessingTime.observe({ status: "success" }, processingTime);
+
+    // Log transcript flow
+    logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, score, out);
 
     return res.json(out);
 
