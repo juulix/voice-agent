@@ -25,7 +25,7 @@ if (process.env.SENTRY_DSN) {
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 /* ===== OPENAI HELPER FUNCTIONS ===== */
-// Modeļi, kas neakceptē 'temperature' (atstāj pēc fakta: transcribe/realtime)
+// Modeļi, kam NEDRĪKST sūtīt temperature (atsevišķi transcribe/realtime)
 const FIXED_TEMP_MODELS = new Set([
   "gpt-4o-mini-transcribe",
   "gpt-realtime",
@@ -36,20 +36,21 @@ const DEFAULT_TEXT_MODEL = "gpt-5-mini";   // galvenajām operācijām
 const CHEAP_TASK_MODEL  = "gpt-5-nano";    // kopsavilkumi/klasifikācija u.tml. (ja gribi lietot)
 
 /**
- * Build OpenAI API parameters with automatic temperature handling
+ * Build OpenAI API parameters with automatic temperature and token handling
  * @param {Object} params - API parameters
  * @param {string} params.model - Model name
  * @param {Array} params.messages - Messages array
  * @param {string} [params.system] - System message (alternative to messages)
  * @param {boolean} [params.json=false] - Use JSON response format
- * @param {number} [params.max=300] - Max completion tokens
+ * @param {Object} [params.jsonSchema=null] - JSON Schema for strict validation
+ * @param {number} [params.max=280] - Max completion tokens
  * @param {number|null} [params.temperature=0] - Temperature (0-2), null to omit
  * @returns {Object} OpenAI API parameters
  */
-function buildParams({ model, messages, system, json = false, max = 300, temperature = 0 }) {
+function buildParams({ model, messages, system, json = false, jsonSchema = null, max = 280, temperature = 0 }) {
   const p = {
     model,
-    max_completion_tokens: max,
+    max_completion_tokens: max, // Svarīgi: NEVIS max_tokens
   };
 
   if (messages) p.messages = messages;
@@ -66,19 +67,24 @@ function buildParams({ model, messages, system, json = false, max = 300, tempera
     }
   }
 
-  // JSON režīms — izmanto atbalstīto response_format + skaidru norādi sistēmā
+  // JSON režīms (vienkāršs)
   if (json) {
     p.response_format = { type: "json_object" };
-    // Also ensure the prompt explicitly mentions JSON format
-    if (p.messages && p.messages.length > 0) {
-      const systemMsg = p.messages.find(m => m.role === "system");
-      if (systemMsg && !systemMsg.content.includes("JSON")) {
-        systemMsg.content += "\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu. Nav markdown, nav ```json```, tikai tīrs JSON.";
-      }
-    }
   }
 
-  // Tikai, ja modelis atbalsta 'temperature', to pievienojam
+  // JSON Schema (stingrs)
+  if (jsonSchema) {
+    p.response_format = {
+      type: "json_schema",
+      json_schema: {
+        name: jsonSchema.name || "schema",
+        schema: jsonSchema.schema,
+        strict: true
+      }
+    };
+  }
+
+  // Temperature – tikai ja modelis to atbalsta
   if (!FIXED_TEMP_MODELS.has(model) && temperature != null) {
     p.temperature = temperature;
   }
@@ -87,7 +93,7 @@ function buildParams({ model, messages, system, json = false, max = 300, tempera
 }
 
 /**
- * Safe OpenAI API call with automatic temperature retry
+ * Safe OpenAI API call with automatic retry for temperature and max_tokens issues
  * @param {Object} params - OpenAI API parameters
  * @returns {Promise} OpenAI API response
  */
@@ -96,13 +102,26 @@ async function safeCreate(params) {
     return await openai.chat.completions.create(params);
   } catch (e) {
     const msg = e?.error?.message || e?.message || "";
+    
+    // 1) Auto-labojums: max_tokens → max_completion_tokens
+    if (msg.includes("max_tokens") && msg.includes("max_completion_tokens")) {
+      const clone = { ...params };
+      if ('max_tokens' in clone) {
+        clone.max_completion_tokens = clone.max_tokens;
+        delete clone.max_tokens;
+      }
+      console.log(`⚠️ Auto-fixed max_tokens → max_completion_tokens for ${params.model}`);
+      return await openai.chat.completions.create(clone);
+    }
+    
+    // 2) Auto-labojums: izmet temperature, ja neatbalstīts
     if (msg.includes("temperature") && msg.includes("Only the default (1) value is supported")) {
-      // Retry without temperature parameter
       const clone = { ...params };
       delete clone.temperature;
       console.log(`⚠️ Temperature not supported for ${params.model}, retrying without temperature`);
       return await openai.chat.completions.create(clone);
     }
+    
     throw e;
   }
 }
@@ -725,6 +744,71 @@ Piemēri:
 - "pie vesetiņu uzņemšanas dienu" + konteksts "dzimšanas diena" → "pie vectētiņu uzņemšanas dienu" (ģimenes pasākums, nevis veselības iestāde)
 - "Atgādinu, ka pie vesetiņu uz dzimšanas dienu" → "Atgādinu, ka pie vectētiņu uz dzimšanas dienu" (vectētiņu, nevis veselīšu)`;
 
+/* ===== JSON Schema definīcijas ===== */
+const EVENT_SCHEMA = {
+  name: "calendar_or_reminder",
+  schema: {
+    type: "object",
+    oneOf: [
+      {
+        title: "reminder",
+        type: "object",
+        properties: {
+          type:        { const: "reminder" },
+          lang:        { type: "string", const: "lv" },
+          description: { type: "string", minLength: 2 },
+          start:       { type: "string", description: "ISO 8601, Europe/Riga", pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}" },
+          hasTime:     { type: "boolean" },
+          timezone:    { type: "string", const: "Europe/Riga" }
+        },
+        required: ["type", "lang", "description", "start", "hasTime"],
+        additionalProperties: false
+      },
+      {
+        title: "calendar",
+        type: "object",
+        properties: {
+          type:        { const: "calendar" },
+          lang:        { type: "string", const: "lv" },
+          description: { type: "string", minLength: 2 },
+          start:       { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}" },
+          end:         { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}" },
+          timezone:    { type: "string", const: "Europe/Riga" }
+        },
+        required: ["type", "lang", "description", "start", "end"],
+        additionalProperties: false
+      },
+      {
+        title: "shopping",
+        type: "object",
+        properties: {
+          type:        { const: "shopping" },
+          lang:        { type: "string", const: "lv" },
+          items:       { type: "string", minLength: 2 },
+          description: { type: "string" }
+        },
+        required: ["type", "lang", "items"],
+        additionalProperties: false
+      }
+    ]
+  }
+};
+
+/* ===== Validācija ===== */
+function isValidCalendarJson(obj) {
+  if (!obj || typeof obj !== "object") return false;
+  if (obj.type === "reminder") {
+    return !!(obj.description && obj.start && obj.hasTime !== undefined && obj.lang);
+  }
+  if (obj.type === "calendar") {
+    return !!(obj.description && obj.start && obj.end && obj.lang);
+  }
+  if (obj.type === "shopping") {
+    return !!(obj.items && obj.lang);
+  }
+  return false;
+}
+
 /* ===== Deterministiskais LV parsētājs ===== */
 
 const SYSTEM_PROMPT = `Tu esi deterministisks latviešu dabiskās valodas parsētājs. Atgriez TIKAI derīgu JSON objektu bez markdown, bez skaidrojumiem, bez teksta ārpus JSON. Formāts: {"type":"reminder|calendar|shopping","lang":"lv","start":"YYYY-MM-DDTHH:MM:SS+ZZ:ZZ","description":"...","hasTime":true/false}. Temperatūra = 0.
@@ -1211,7 +1295,7 @@ app.post("/ingest-audio", async (req, res) => {
     }
   }
 
-  // Ja v2 neizdevās vai nav ieslēgts – krītam atpakaļ uz LLM
+  // Ja v2 neizdevās vai nav ieslēgts – krītam atpakaļ uz LLM ar JSON Schema
   console.log(`🤖 LLM fallback: parsing with GPT for "${analyzedText.substring(0, 50)}..."`);
   let chat;
   const maxRetries = 2;
@@ -1220,23 +1304,30 @@ app.post("/ingest-audio", async (req, res) => {
   try {
     while (retryCount <= maxRetries) {
       try {
+        const messages = [
+          { 
+            role: "system", 
+            content: "Tu esi strikts parsētājs. No lietotāja teikuma latviešu valodā izveido vai nu 'reminder', vai 'calendar', vai 'shopping' precīzi pēc shēmas. Atgriez TIKAI derīgu JSON; nekādu skaidrojumu vai markdown."
+          },
+          { role: "user", content: userMsg }
+        ];
+        
         const params = buildParams({
           model: DEFAULT_TEXT_MODEL,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userMsg }
-          ],
-          json: true,
+          messages: messages,
+          jsonSchema: EVENT_SCHEMA,  // Stingra shēma
           max: 280,
           temperature: 0
         });
+        
         console.log(`🔍 LLM request params:`, JSON.stringify({
           model: params.model,
-          has_json_format: !!params.response_format,
-          max_tokens: params.max_completion_tokens,
+          has_json_schema: !!params.response_format?.json_schema,
+          max_completion_tokens: params.max_completion_tokens,
           has_temperature: 'temperature' in params,
           messages_count: params.messages?.length
         }));
+        
         chat = await safeCreate(params);
         console.log(`✅ LLM response received, content length: ${chat?.choices?.[0]?.message?.content?.length || 0}`);
         break; // Success
@@ -1304,9 +1395,9 @@ app.post("/ingest-audio", async (req, res) => {
       console.log(`🔍 LLM raw response (first 200 chars): ${content.substring(0, 200)}`);
       out = JSON.parse(content);
       
-      // Validate that out has required fields
-      if (!out.type || (!out.description && !out.items)) {
-        console.warn(`⚠️ LLM returned invalid JSON, missing type or description. Full content: ${content}`);
+      // Validate JSON with schema
+      if (!isValidCalendarJson(out)) {
+        console.warn(`⚠️ LLM returned invalid JSON (failed validation). Content: ${content.substring(0, 200)}`);
         // Create fallback reminder
         out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
       }
