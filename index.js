@@ -64,7 +64,18 @@ function buildParams({ model, messages, system, json = false, max = 300, tempera
     }
   }
 
-  if (json) p.response_format = { type: "json_object" };
+  // GPT-5 mini might need explicit JSON format instruction in prompt instead of response_format
+  // But let's try with response_format first
+  if (json) {
+    p.response_format = { type: "json_object" };
+    // Also ensure the prompt explicitly mentions JSON format
+    if (p.messages && p.messages.length > 0) {
+      const systemMsg = p.messages.find(m => m.role === "system");
+      if (systemMsg && !systemMsg.content.includes("JSON")) {
+        systemMsg.content += "\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu. Nav markdown, nav ```json```, tikai tīrs JSON.";
+      }
+    }
+  }
 
   // Only include temperature if the model allows it
   if (!FIXED_TEMP_MODELS.has(model) && temperature != null) {
@@ -401,11 +412,13 @@ function parseWithCode(text, nowISO, langHint) {
       let h = null, m = 0;
       // Remove "pulksten", "pulkstenīs", "plkst", "plkst." before matching
       const cleaned = l.replace(/\b(pulksten|pulkstenīs|plkst\.?)\b/gi, '').trim();
+      // Also check original text for hour words (in case "pulksten" was at the end)
+      const searchText = cleaned.length > 0 ? cleaned : l;
       for (const [w, val] of hourWords) {
-        if (cleaned.includes(w)) { h = val; break; }
+        if (searchText.includes(w)) { h = val; break; }
       }
       for (const [w, val] of minuteWords) {
-        if (cleaned.includes(w)) { m = val; break; }
+        if (searchText.includes(w)) { m = val; break; }
       }
       return h != null ? { h, m } : null;
     }
@@ -713,7 +726,7 @@ Piemēri:
 
 /* ===== Deterministiskais LV parsētājs ===== */
 
-const SYSTEM_PROMPT = `Tu esi deterministisks latviešu dabiskās valodas parsētājs, kas no īsa teikuma izvada TIKAI TĪRU JSON vienā no trim formām: calendar, reminder vai shopping. Atbilde bez skaidrojumiem, bez teksta ārpus JSON. Temperatūra = 0.
+const SYSTEM_PROMPT = `Tu esi deterministisks latviešu dabiskās valodas parsētājs. Atgriez TIKAI derīgu JSON objektu bez markdown, bez skaidrojumiem, bez teksta ārpus JSON. Formāts: {"type":"reminder|calendar|shopping","lang":"lv","start":"YYYY-MM-DDTHH:MM:SS+ZZ:ZZ","description":"...","hasTime":true/false}. Temperatūra = 0.
 
 Globālie noteikumi
 - Laika josla vienmēr: Europe/Riga (sezonāli +02:00 vai +03:00).
@@ -1206,19 +1219,25 @@ app.post("/ingest-audio", async (req, res) => {
   try {
     while (retryCount <= maxRetries) {
       try {
-        chat = await safeCreate(
-          buildParams({
-            model: "gpt-5-mini",
-            messages: [
-              { role: "system", content: SYSTEM_PROMPT },
-              { role: "user", content: userMsg }
-            ],
-            json: true,
-            max: 300,
-            temperature: 0
-          })
-        );
-        console.log(`✅ LLM response received`);
+        const params = buildParams({
+          model: "gpt-5-mini",
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: userMsg }
+          ],
+          json: true,
+          max: 300,
+          temperature: 0
+        });
+        console.log(`🔍 LLM request params:`, JSON.stringify({
+          model: params.model,
+          has_json_format: !!params.response_format,
+          max_tokens: params.max_completion_tokens,
+          has_temperature: 'temperature' in params,
+          messages_count: params.messages?.length
+        }));
+        chat = await safeCreate(params);
+        console.log(`✅ LLM response received, content length: ${chat?.choices?.[0]?.message?.content?.length || 0}`);
         break; // Success
       } catch (error) {
         retryCount++;
@@ -1281,16 +1300,18 @@ app.post("/ingest-audio", async (req, res) => {
     let out;
     try {
       const content = chat?.choices?.[0]?.message?.content || "{}";
+      console.log(`🔍 LLM raw response (first 200 chars): ${content.substring(0, 200)}`);
       out = JSON.parse(content);
       
       // Validate that out has required fields
       if (!out.type || (!out.description && !out.items)) {
-        console.warn(`⚠️ LLM returned invalid JSON, missing type or description. Content: ${content.substring(0, 100)}`);
+        console.warn(`⚠️ LLM returned invalid JSON, missing type or description. Full content: ${content}`);
         // Create fallback reminder
         out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
       }
     } catch (parseError) {
-      console.error(`❌ JSON parse error: ${parseError.message}`);
+      const rawContent = chat?.choices?.[0]?.message?.content || "empty";
+      console.error(`❌ JSON parse error: ${parseError.message}. Raw content (first 200 chars): ${rawContent.substring(0, 200)}`);
       // Create fallback reminder
       out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
     }
