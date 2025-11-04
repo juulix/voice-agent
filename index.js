@@ -1510,7 +1510,7 @@ app.post("/ingest-audio", async (req, res) => {
         if (isEmpty) {
           console.warn(`⚠️ LLM returned empty JSON {}. Attempting canary fallback to gpt-4o-mini...`);
         } else {
-          console.warn(`⚠️ LLM returned invalid JSON (failed validation). Attempting repair...`);
+          console.warn(`⚠️ LLM returned invalid JSON (failed validation). Type: ${out.type}, hasLang: ${!!out.lang}, hasReminders: ${Array.isArray(out.reminders)}, remindersCount: ${out.reminders?.length || 0}. Attempting repair...`);
         }
         
         // Repair attempt - viens mēģinājums ar skaidru repair prompt
