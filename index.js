@@ -456,28 +456,12 @@ function parseWithCode(text, nowISO, langHint) {
     ];
     function extractWordTime(l) {
       let h = null, m = 0;
-      // Remove "pulksten", "pulkstenīs", "plkst", "plkst." before matching
-      // Piem., "rīt pulksten divos" → "rīt divos"
-      const cleaned = l.replace(/\b(pulksten|pulkstenīs|plkst\.?)\b/gi, '').trim();
-      // Also check original text for hour words (in case "pulksten" was at the end)
-      const searchText = cleaned.length > 0 ? cleaned : l;
-      
-      // Meklēt stundu vārdus ar word boundary, lai precīzāk atpazītu
+      // Vienkārša meklēšana ar includes() - tāpat kā sākumā strādāja
       for (const [w, val] of hourWords) {
-        // Izmantot word boundary regex, lai atpazītu "divos" kā atsevišķu vārdu
-        const regex = new RegExp(`\\b${w}\\b`, 'i');
-        if (regex.test(searchText)) { 
-          h = val; 
-          break; 
-        }
+        if (l.includes(w)) { h = val; break; }
       }
-      // Meklēt minūšu vārdus
       for (const [w, val] of minuteWords) {
-        const regex = new RegExp(`\\b${w}\\b`, 'i');
-        if (regex.test(searchText)) { 
-          m = val; 
-          break; 
-        }
+        if (l.includes(w)) { m = val; break; }
       }
       return h != null ? { h, m } : null;
     }
