@@ -74,14 +74,14 @@ function buildParams({ model, messages, system, json = false, jsonSchema = null,
     p.response_format = { type: "json_object" };
   }
 
-  // JSON Schema (stingrs)
+  // JSON Schema (strict: false, lai atļautu optional laukus)
   if (jsonSchema) {
     p.response_format = {
       type: "json_schema",
       json_schema: {
         name: jsonSchema.name || "schema",
         schema: jsonSchema.schema,
-        strict: true
+        strict: false // Atļauj optional laukus
       }
     };
   }
@@ -362,11 +362,35 @@ function toRigaISO(d) {
 }
 
 // ===== Simple deterministic LV parser (v2 under flag) =====
+// Normalizācija pirms parsēšanas - labo biežākās kļūdas
+function normalizeForParser(text) {
+  let normalized = text;
+  // Labo relatīvo dienu kļūdas (bet ne personvārdus)
+  // "Rītu" kā personvārds parasti ir ar lielo burtu un pirms tam ir cits vārds (piem., "ar Jāni Rītu")
+  normalized = normalized.replace(/\b([Rr]ītu|[Rr]it)\b/g, (match, p1, offset) => {
+    // Pārbaudām, vai nav personvārds - ja pirms tam ir vārds ar lielo burtu (piem., "Jāni Rītu")
+    if (offset > 0) {
+      const beforeMatch = text.substring(Math.max(0, offset - 20), offset);
+      // Ja pirms tam ir lielais burts (personvārds), atstāj kā ir
+      if (/[A-ZĀČĒĢĪĶĻŅŠŪŽ][a-zāčēģīķļņšūž]+\s+[Rr]ītu/.test(beforeMatch + match)) {
+        return match; // Atstāj kā ir (personvārds, piem., "Jāni Rītu")
+      }
+    }
+    // Citādi - labo uz "rīt"
+    return match.charAt(0) === 'R' ? 'Rīt' : 'rīt';
+  });
+  // Labo citas biežas kļūdas
+  normalized = normalized.replace(/\bpulkstenis\b/gi, "pulksten");
+  return normalized;
+}
+
 function parseWithCode(text, nowISO, langHint) {
   try {
     const tz = "Europe/Riga";
     const now = new Date(nowISO);
-    const t = (text || "").trim();
+    // Normalizācija pirms parsēšanas
+    const normalized = normalizeForParser(text);
+    const t = normalized.trim();
     const lower = t.toLowerCase();
 
     // Shopping detection
@@ -511,11 +535,11 @@ function parseWithCode(text, nowISO, langHint) {
     if (startDate) {
       const startISO = toRigaISO(startDate);
       const endISO = toRigaISO(endDate || new Date(startDate.getTime() + 60 * 60 * 1000));
-      // Heuristic type: if text mentions atgādināt/reminder
-      const isReminder = /(atgādin|reminder)/i.test(lower);
+      // Heuristic type: if text mentions atgādināt/reminder, vai ja nav end (vienkāršs reminders)
+      const isReminder = /(atgādin|reminder)/i.test(lower) || !endDate;
       const out = isReminder
-        ? { type: 'reminder', lang: (langHint || 'lv'), start: startISO, description: t, hasTime: true }
-        : { type: 'calendar', lang: (langHint || 'lv'), start: startISO, end: endISO, description: t };
+        ? { type: 'reminder', lang: (langHint || 'lv'), start: startISO, description: t, hasTime: true, confidence: 0.9 }
+        : { type: 'calendar', lang: (langHint || 'lv'), start: startISO, end: endISO, description: t, confidence: 0.9 };
       return out;
     }
 
@@ -747,8 +771,7 @@ Piemēri:
 - "Atgādinu, ka pie vesetiņu uz dzimšanas dienu" → "Atgādinu, ka pie vectētiņu uz dzimšanas dienu" (vectētiņu, nevis veselīšu)`;
 
 /* ===== JSON Schema definīcijas ===== */
-// OpenAI JSON Schema neatbalsta oneOf, tāpēc izmantojam vienkāršāku struktūru
-// Visi lauki ir optional, bet type ir required
+// OpenAI JSON Schema - strict: false, lai atļautu optional laukus
 const EVENT_SCHEMA = {
   name: "calendar_or_reminder",
   schema: {
@@ -764,7 +787,7 @@ const EVENT_SCHEMA = {
       },
       description: {
         type: "string",
-        minLength: 2
+        minLength: 1
       },
       start: {
         type: "string",
@@ -773,20 +796,20 @@ const EVENT_SCHEMA = {
       },
       end: {
         type: "string",
-        description: "ISO 8601, Europe/Riga, format: YYYY-MM-DDTHH:MM (required for calendar)",
+        description: "ISO 8601, Europe/Riga, format: YYYY-MM-DDTHH:MM (for calendar)",
         pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}"
       },
       hasTime: {
         type: "boolean",
-        description: "Required for reminder type"
+        description: "For reminder type"
       },
       items: {
         type: "string",
-        minLength: 2,
-        description: "Required for shopping type"
+        minLength: 1,
+        description: "For shopping type"
       }
     },
-    required: ["type", "lang"],
+    required: ["type", "lang", "description"], // Minimal required fields
     additionalProperties: false
   }
 };
@@ -1249,8 +1272,9 @@ app.post("/ingest-audio", async (req, res) => {
   if (parserV2) {
     console.log(`🧭 Parser v2 attempting parse: "${analyzedText}"`);
     const parsed = parseWithCode(analyzedText, nowISO, langHint);
-    if (parsed) {
-      console.log(`🧭 Parser v2 used: type=${parsed.type}, start=${parsed.start}, end=${parsed.end || 'none'}`);
+    // Ja Parser v2 atgriež objektu ar pietiekamu confidence (≥0.8), izmanto to bez LLM
+    if (parsed && parsed.confidence >= 0.8) {
+      console.log(`🧭 Parser v2 used (confidence: ${parsed.confidence}): type=${parsed.type}, start=${parsed.start}, end=${parsed.end || 'none'}`);
       parsed.raw_transcript = raw;
       parsed.normalized_transcript = norm;
       parsed.analyzed_transcript = analyzedText;
@@ -1288,7 +1312,7 @@ app.post("/ingest-audio", async (req, res) => {
       
       return res.json(parsed);
     } else {
-      console.log(`🧭 Parser v2 returned null, falling back to LLM`);
+      console.log(`🧭 Parser v2 returned ${parsed ? `low confidence (${parsed.confidence || 0})` : 'null'}, falling back to LLM`);
     }
   }
 
@@ -1394,9 +1418,44 @@ app.post("/ingest-audio", async (req, res) => {
       
       // Validate JSON with schema
       if (!isValidCalendarJson(out)) {
-        console.warn(`⚠️ LLM returned invalid JSON (failed validation). Content: ${content.substring(0, 200)}`);
-        // Create fallback reminder
-        out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
+        console.warn(`⚠️ LLM returned invalid JSON (failed validation). Attempting repair...`);
+        
+        // Repair attempt - viens mēģinājums ar skaidru repair prompt
+        try {
+          const repairMessages = [
+            { 
+              role: "system", 
+              content: "Tu esi parsētājs. Atgriez derīgu JSON pēc shēmas. Nekādu paskaidrojumu, tikai JSON."
+            },
+            { 
+              role: "user", 
+              content: `Labo šo JSON, lai tas atbilstu shēmai:\n${JSON.stringify(out, null, 2)}\n\nSākotnējais teksts: ${analyzedText}`
+            }
+          ];
+          
+          const repairParams = buildParams({
+            model: DEFAULT_TEXT_MODEL,
+            messages: repairMessages,
+            jsonSchema: EVENT_SCHEMA,
+            max: 280,
+            temperature: 0
+          });
+          
+          const repairChat = await safeCreate(repairParams);
+          const repairContent = repairChat?.choices?.[0]?.message?.content || "{}";
+          const repaired = JSON.parse(repairContent);
+          
+          if (isValidCalendarJson(repaired)) {
+            console.log(`✅ Repair successful`);
+            out = repaired;
+          } else {
+            console.warn(`⚠️ Repair failed, using fallback`);
+            out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
+          }
+        } catch (repairError) {
+          console.error(`❌ Repair attempt failed: ${repairError.message}`);
+          out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
+        }
       }
     } catch (parseError) {
       const rawContent = chat?.choices?.[0]?.message?.content || "empty";
