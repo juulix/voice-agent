@@ -1073,6 +1073,82 @@ function logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, sco
 }
 
 /* ===== POST /ingest-audio ===== */
+// Testa endpoints - pieņem tīru tekstu (bez audio faila)
+// Lietojums: POST /test-parse {"text": "Rīt pulksten divos tikšanās ar Jāni"}
+app.post("/test-parse", async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ error: "missing_text", message: "Pievienojiet 'text' lauku" });
+    }
+
+    // Simulējam Whisper transkripciju - izmantojam tekstu tieši
+    const raw = text.trim();
+    const norm = normalizeTranscript(raw, 'lv');
+    const analyzedText = norm; // Pagaidām bez AI analīzes testiem
+    const langHint = 'lv';
+    const nowISO = toRigaISO(new Date());
+    
+    // Izmantojam to pašu parsēšanas loģiku kā /ingest-audio
+    // Feature flags
+    const parserV2 = true; // Testos vienmēr ieslēdzam
+    const textQCv2 = true;
+    
+    // Parsēšana ar Parser v2 vai LLM
+    let parsed = null;
+    
+    if (parserV2) {
+      console.log(`🧭 [TEST] Parser v2 attempting parse: "${analyzedText}"`);
+      parsed = parseWithCode(analyzedText, nowISO, langHint);
+      if (parsed && parsed.confidence >= 0.8) {
+        console.log(`🧭 [TEST] Parser v2 used: type=${parsed.type}`);
+        parsed.raw_transcript = raw;
+        parsed.normalized_transcript = norm;
+        parsed.analyzed_transcript = analyzedText;
+        parsed.analysis_applied = false;
+        parsed.test_mode = true;
+        return res.json(parsed);
+      }
+    }
+    
+    // LLM fallback
+    console.log(`🤖 [TEST] LLM fallback: parsing with GPT`);
+    const userMsg = `currentTime=${nowISO}\ntomorrowExample=${toRigaISO(new Date(Date.now() + 24 * 3600 * 1000))}\nTeksts: ${analyzedText}`;
+    
+    const messages = [
+      { 
+        role: "system", 
+        content: SYSTEM_PROMPT + `\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu pēc shēmas. Nav markdown, nav \`\`\`json\`\`\`, tikai tīrs JSON ar type, lang, description, start, hasTime (vai end calendar gadījumā).\n\nTagadējais datums un laiks: ${nowISO} (Europe/Riga).`
+      },
+      { role: "user", content: userMsg }
+    ];
+    
+    const params = buildParams({
+      model: DEFAULT_TEXT_MODEL,
+      messages: messages,
+      json: true,
+      max: 280,
+      temperature: 0
+    });
+    
+    const chat = await safeCreate(params);
+    const content = chat?.choices?.[0]?.message?.content || "{}";
+    const out = JSON.parse(content);
+    
+    out.raw_transcript = raw;
+    out.normalized_transcript = norm;
+    out.analyzed_transcript = analyzedText;
+    out.analysis_applied = false;
+    out.test_mode = true;
+    
+    return res.json(out);
+    
+  } catch (error) {
+    console.error("[TEST] Error:", error);
+    return res.status(500).json({ error: "test_failed", details: String(error) });
+  }
+});
+
 app.post("/ingest-audio", async (req, res) => {
   const processingStart = Date.now();
   try {
