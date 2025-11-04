@@ -457,14 +457,27 @@ function parseWithCode(text, nowISO, langHint) {
     function extractWordTime(l) {
       let h = null, m = 0;
       // Remove "pulksten", "pulkstenīs", "plkst", "plkst." before matching
+      // Piem., "rīt pulksten divos" → "rīt divos"
       const cleaned = l.replace(/\b(pulksten|pulkstenīs|plkst\.?)\b/gi, '').trim();
       // Also check original text for hour words (in case "pulksten" was at the end)
       const searchText = cleaned.length > 0 ? cleaned : l;
+      
+      // Meklēt stundu vārdus ar word boundary, lai precīzāk atpazītu
       for (const [w, val] of hourWords) {
-        if (searchText.includes(w)) { h = val; break; }
+        // Izmantot word boundary regex, lai atpazītu "divos" kā atsevišķu vārdu
+        const regex = new RegExp(`\\b${w}\\b`, 'i');
+        if (regex.test(searchText)) { 
+          h = val; 
+          break; 
+        }
       }
+      // Meklēt minūšu vārdus
       for (const [w, val] of minuteWords) {
-        if (searchText.includes(w)) { m = val; break; }
+        const regex = new RegExp(`\\b${w}\\b`, 'i');
+        if (regex.test(searchText)) { 
+          m = val; 
+          break; 
+        }
       }
       return h != null ? { h, m } : null;
     }
@@ -1328,15 +1341,16 @@ app.post("/ingest-audio", async (req, res) => {
         const messages = [
           { 
             role: "system", 
-            content: "Tu esi strikts parsētājs. No lietotāja teikuma latviešu valodā izveido vai nu 'reminder', vai 'calendar', vai 'shopping' precīzi pēc shēmas. Atgriez TIKAI derīgu JSON; nekādu skaidrojumu vai markdown."
+            content: SYSTEM_PROMPT + "\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu pēc shēmas. Nav markdown, nav ```json```, tikai tīrs JSON ar type, lang, description, start, hasTime (vai end calendar gadījumā)."
           },
           { role: "user", content: userMsg }
         ];
         
+        // GPT-5 mini var nestrādāt ar JSON Schema, tāpēc izmantojam vienkāršu JSON mode
         const params = buildParams({
           model: DEFAULT_TEXT_MODEL,
           messages: messages,
-          jsonSchema: EVENT_SCHEMA,  // Stingra shēma
+          json: true,  // Vienkāršs JSON mode (nevis JSON Schema)
           max: 280,
           temperature: 0
         });
@@ -1416,52 +1430,161 @@ app.post("/ingest-audio", async (req, res) => {
       console.log(`🔍 LLM raw response (first 200 chars): ${content.substring(0, 200)}`);
       out = JSON.parse(content);
       
-      // Validate JSON with schema
-      if (!isValidCalendarJson(out)) {
-        console.warn(`⚠️ LLM returned invalid JSON (failed validation). Attempting repair...`);
+      // Validate JSON with schema - pārbaudām arī, vai nav tukšs
+      const isEmpty = Object.keys(out).length === 0;
+      const isValid = !isEmpty && isValidCalendarJson(out);
+      
+      if (!isValid) {
+        if (isEmpty) {
+          console.warn(`⚠️ LLM returned empty JSON {}. Attempting canary fallback to gpt-4o-mini...`);
+        } else {
+          console.warn(`⚠️ LLM returned invalid JSON (failed validation). Attempting repair...`);
+        }
         
         // Repair attempt - viens mēģinājums ar skaidru repair prompt
+        let repaired = null;
         try {
           const repairMessages = [
             { 
               role: "system", 
-              content: "Tu esi parsētājs. Atgriez derīgu JSON pēc shēmas. Nekādu paskaidrojumu, tikai JSON."
+              content: SYSTEM_PROMPT + "\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu ar type, lang, description, start, hasTime. Nav markdown, tikai tīrs JSON."
             },
             { 
               role: "user", 
-              content: `Labo šo JSON, lai tas atbilstu shēmai:\n${JSON.stringify(out, null, 2)}\n\nSākotnējais teksts: ${analyzedText}`
+              content: isEmpty 
+                ? `Parsē šo tekstu latviešu valodā un izveido JSON:\n${analyzedText}`
+                : `Labo šo JSON, lai tas atbilstu shēmai:\n${JSON.stringify(out, null, 2)}\n\nSākotnējais teksts: ${analyzedText}`
             }
           ];
           
           const repairParams = buildParams({
             model: DEFAULT_TEXT_MODEL,
             messages: repairMessages,
-            jsonSchema: EVENT_SCHEMA,
+            json: true,
             max: 280,
             temperature: 0
           });
           
           const repairChat = await safeCreate(repairParams);
           const repairContent = repairChat?.choices?.[0]?.message?.content || "{}";
-          const repaired = JSON.parse(repairContent);
+          repaired = JSON.parse(repairContent);
           
-          if (isValidCalendarJson(repaired)) {
+          if (!isEmpty && isValidCalendarJson(repaired)) {
             console.log(`✅ Repair successful`);
             out = repaired;
+          } else if (isEmpty && isValidCalendarJson(repaired)) {
+            console.log(`✅ Canary repair successful`);
+            out = repaired;
           } else {
-            console.warn(`⚠️ Repair failed, using fallback`);
-            out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
+            console.warn(`⚠️ Repair failed, trying canary fallback to gpt-4o-mini...`);
+            // Canary fallback uz gpt-4o-mini
+            try {
+              const canaryMessages = [
+                { 
+                  role: "system", 
+                  content: SYSTEM_PROMPT + "\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu ar type, lang, description, start, hasTime. Nav markdown, tikai tīrs JSON."
+                },
+                { role: "user", content: analyzedText }
+              ];
+              
+              const canaryParams = buildParams({
+                model: "gpt-4o-mini",
+                messages: canaryMessages,
+                json: true,
+                max: 280,
+                temperature: 0
+              });
+              
+              const canaryChat = await safeCreate(canaryParams);
+              const canaryContent = canaryChat?.choices?.[0]?.message?.content || "{}";
+              const canaryOut = JSON.parse(canaryContent);
+              
+              if (isValidCalendarJson(canaryOut)) {
+                console.log(`✅ Canary fallback (gpt-4o-mini) successful`);
+                out = canaryOut;
+              } else {
+                console.warn(`⚠️ Canary fallback failed, using generic reminder`);
+                out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
+              }
+            } catch (canaryError) {
+              console.error(`❌ Canary fallback failed: ${canaryError.message}`);
+              out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
+            }
           }
         } catch (repairError) {
-          console.error(`❌ Repair attempt failed: ${repairError.message}`);
-          out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
+          console.error(`❌ Repair attempt failed: ${repairError.message}. Trying canary fallback...`);
+          // Canary fallback uz gpt-4o-mini
+          try {
+            const canaryMessages = [
+              { 
+                role: "system", 
+                content: SYSTEM_PROMPT + "\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu ar type, lang, description, start, hasTime. Nav markdown, tikai tīrs JSON."
+              },
+              { role: "user", content: analyzedText }
+            ];
+            
+            const canaryParams = buildParams({
+              model: "gpt-4o-mini",
+              messages: canaryMessages,
+              json: true,
+              max: 280,
+              temperature: 0
+            });
+            
+            const canaryChat = await safeCreate(canaryParams);
+            const canaryContent = canaryChat?.choices?.[0]?.message?.content || "{}";
+            const canaryOut = JSON.parse(canaryContent);
+            
+            if (isValidCalendarJson(canaryOut)) {
+              console.log(`✅ Canary fallback (gpt-4o-mini) successful`);
+              out = canaryOut;
+            } else {
+              console.warn(`⚠️ Canary fallback failed, using generic reminder`);
+              out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
+            }
+          } catch (canaryError) {
+            console.error(`❌ Canary fallback failed: ${canaryError.message}`);
+            out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
+          }
         }
       }
     } catch (parseError) {
       const rawContent = chat?.choices?.[0]?.message?.content || "empty";
-      console.error(`❌ JSON parse error: ${parseError.message}. Raw content (first 200 chars): ${rawContent.substring(0, 200)}`);
-      // Create fallback reminder
-      out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
+      console.error(`❌ JSON parse error: ${parseError.message}. Raw content (first 200 chars): ${rawContent.substring(0, 200)}. Trying canary fallback...`);
+      
+      // Canary fallback uz gpt-4o-mini
+      try {
+        const canaryMessages = [
+          { 
+            role: "system", 
+            content: SYSTEM_PROMPT + "\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu ar type, lang, description, start, hasTime. Nav markdown, tikai tīrs JSON."
+          },
+          { role: "user", content: analyzedText }
+        ];
+        
+        const canaryParams = buildParams({
+          model: "gpt-4o-mini",
+          messages: canaryMessages,
+          json: true,
+          max: 280,
+          temperature: 0
+        });
+        
+        const canaryChat = await safeCreate(canaryParams);
+        const canaryContent = canaryChat?.choices?.[0]?.message?.content || "{}";
+        const canaryOut = JSON.parse(canaryContent);
+        
+        if (isValidCalendarJson(canaryOut)) {
+          console.log(`✅ Canary fallback (gpt-4o-mini) successful after parse error`);
+          out = canaryOut;
+        } else {
+          console.warn(`⚠️ Canary fallback failed, using generic reminder`);
+          out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
+        }
+      } catch (canaryError) {
+        console.error(`❌ Canary fallback failed: ${canaryError.message}`);
+        out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
+      }
     }
 
     // Ensure out has required fields before proceeding
