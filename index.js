@@ -25,13 +25,15 @@ if (process.env.SENTRY_DSN) {
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 /* ===== OPENAI HELPER FUNCTIONS ===== */
-// Models that don't support temperature parameter (only default 1)
+// Modeļi, kas neakceptē 'temperature' (atstāj pēc fakta: transcribe/realtime)
 const FIXED_TEMP_MODELS = new Set([
   "gpt-4o-mini-transcribe",
-  "gpt-5-mini",
   "gpt-realtime",
-  // Add other fixed-temp models here as needed
 ]);
+
+// Noklusētie modeļi (vieglāk mainīt vienuviet)
+const DEFAULT_TEXT_MODEL = "gpt-5-mini";   // galvenajām operācijām
+const CHEAP_TASK_MODEL  = "gpt-5-nano";    // kopsavilkumi/klasifikācija u.tml. (ja gribi lietot)
 
 /**
  * Build OpenAI API parameters with automatic temperature handling
@@ -64,8 +66,7 @@ function buildParams({ model, messages, system, json = false, max = 300, tempera
     }
   }
 
-  // GPT-5 mini might need explicit JSON format instruction in prompt instead of response_format
-  // But let's try with response_format first
+  // JSON režīms — izmanto atbalstīto response_format + skaidru norādi sistēmā
   if (json) {
     p.response_format = { type: "json_object" };
     // Also ensure the prompt explicitly mentions JSON format
@@ -77,7 +78,7 @@ function buildParams({ model, messages, system, json = false, max = 300, tempera
     }
   }
 
-  // Only include temperature if the model allows it
+  // Tikai, ja modelis atbalsta 'temperature', to pievienojam
   if (!FIXED_TEMP_MODELS.has(model) && temperature != null) {
     p.temperature = temperature;
   }
@@ -1113,12 +1114,12 @@ app.post("/ingest-audio", async (req, res) => {
           // Combined LV analysis (saves 1 AI call by doing both general + shopping analysis in one call)
           const analysis = await safeCreate(
             buildParams({
-              model: "gpt-5-mini",
+              model: DEFAULT_TEXT_MODEL,
               messages: [
                 { role: "system", content: LV_COMBINED_ANALYSIS_PROMPT },
                 { role: "user", content: norm }
               ],
-              max: 200,
+              max: 350,
               temperature: 0
             })
           );
@@ -1220,13 +1221,13 @@ app.post("/ingest-audio", async (req, res) => {
     while (retryCount <= maxRetries) {
       try {
         const params = buildParams({
-          model: "gpt-5-mini",
+          model: DEFAULT_TEXT_MODEL,
           messages: [
             { role: "system", content: SYSTEM_PROMPT },
             { role: "user", content: userMsg }
           ],
           json: true,
-          max: 300,
+          max: 280,
           temperature: 0
         });
         console.log(`🔍 LLM request params:`, JSON.stringify({
