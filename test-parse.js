@@ -18,6 +18,9 @@ async function testParse(text) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-User-Id': 'u-1761411475-8ae09a4e', // Test user ID
+        'X-Device-Id': 'd-test-device',
+        'X-Plan': 'dev',
       },
       body: JSON.stringify({ text })
     });
