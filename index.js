@@ -1027,7 +1027,7 @@ app.post("/ingest-audio", async (req, res) => {
           const analysis = await openai.chat.completions.create({
             model: "gpt-5-mini", // Testing GPT-5 mini
             temperature: 0,
-            max_tokens: 200, // Limit output for cost savings
+            max_completion_tokens: 200, // GPT-5 mini uses max_completion_tokens instead of max_tokens
             messages: [
               { role: "system", content: LV_COMBINED_ANALYSIS_PROMPT },
               { role: "user", content: norm }
@@ -1130,7 +1130,7 @@ app.post("/ingest-audio", async (req, res) => {
           model: "gpt-5-mini", // Testing GPT-5 mini
           temperature: 0,
           response_format: { type: "json_object" },
-          max_tokens: 300, // Limit output for cost savings
+          max_completion_tokens: 300, // GPT-5 mini uses max_completion_tokens instead of max_tokens
           messages: [
             { role: "system", content: SYSTEM_PROMPT },
             { role: "user", content: userMsg }
