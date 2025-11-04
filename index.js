@@ -685,6 +685,14 @@ Izvades shēmas:
 { "type":"reminder","lang":"lv","start":"...","description":"...","hasTime":true }
 { "type":"shopping","lang":"lv","items":"piens, maize, olas","description":"Pirkumu saraksts" }
 
+Vairāki reminderi vienā frāzē:
+- Ja tekstā ir vairāki atgādinājumi (atdalīti ar "un", "kā arī", "arī", utt.):
+  { "type":"reminders","lang":"lv","reminders":[
+    {"type":"reminder","start":"...","description":"...","hasTime":true},
+    {"type":"reminder","start":"...","description":"...","hasTime":false}
+  ]}
+- Ja ir viens reminders → izmanto vienkāršo formu (backward compatible).
+
 Atgriez tikai vienu no formām.`;
 
 /* ===== RATE LIMITING ===== */
@@ -1147,12 +1155,69 @@ app.post("/ingest-audio", async (req, res) => {
       out = { type: "reminder", lang: langHint, start: nowISO, description: norm, hasTime: false };
     }
 
+    // Pārbaudām vai ir masīvs ar reminderiem
+    const isMultipleReminders = out.type === "reminders" && Array.isArray(out.reminders) && out.reminders.length > 0;
+    
+    if (isMultipleReminders) {
+      // Apstrādājam katru reminderu masīvā
+      for (const reminder of out.reminders) {
+        reminder.raw_transcript = raw;
+        reminder.normalized_transcript = norm;
+        reminder.analyzed_transcript = analyzedText;
+        reminder.analysis_applied = needsAnalysis;
+        reminder.confidence = score;
+        reminder.lang = reminder.lang || langHint;
+      }
+      
+      // Quota counting - ja < 20 sekundes, skaitām kā 1 request
+      const totalProcessingTime = Date.now() - processingStart;
+      if (totalProcessingTime < 20000) {
+        u.daily.used += 1; // Skaitām kā 1 request
+      } else {
+        // Skaitām pēc reminderu skaita
+        u.daily.used += out.reminders.length;
+      }
+      
+      // Kvotu statuss atbildē (kopīgs visiem reminderiem)
+      out.quota = {
+        plan: limits.plan,
+        dailyLimit: normalizeDaily(limits.dailyLimit),
+        dailyUsed: u.daily.used,
+        dailyRemaining: limits.dailyLimit >= 999999 ? null : Math.max(0, limits.dailyLimit - u.daily.used),
+        dailyGraceLimit: GRACE_DAILY,
+        dailyGraceUsed: u.daily.graceUsed
+      };
+      if (limits.plan === "pro") {
+        out.quota.monthlyLimit = limits.monthlyLimit;
+        out.quota.monthlyUsed = u.monthly.used;
+        out.quota.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
+      }
+      
+      // Update quota in database
+      await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
+      databaseOperations.inc({ operation: "update", table: "quota_usage" }, 1);
+      quotaUsage.inc({ plan: limits.plan, type: "daily" }, 1);
+      if (limits.plan === "pro") { quotaUsage.inc({ plan: limits.plan, type: "monthly" }, 1); }
+      
+      // Track successful operations
+      operationsTotal.inc({ status: "success", plan: limits.plan }, 1);
+      
+      out.requestId = req.requestId;
+      const processingTime = Date.now() - processingStart;
+      audioProcessingTime.observe({ status: "success" }, processingTime);
+      
+      // Log transcript flow
+      logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, score, out);
+      
+      return res.json(out);
+    }
+
+    // Backward compatible: viens reminders (vai cits types)
     out.raw_transcript = raw;
     out.normalized_transcript = norm;
     out.analyzed_transcript = analyzedText;
     out.analysis_applied = needsAnalysis;
     out.confidence = score;
-
 
     // ŠIS ieraksts derīgs → skaitām kvotu
     u.daily.used += 1;
