@@ -388,6 +388,7 @@ function parseWithCode(text, nowISO, langHint) {
     const isPusdevinos = /pusdeviņos|pusdeviņi|pus deviņos/.test(lower);
 
     // Time patterns (word-based hours and minutes)
+    // Atpazīst arī "pulksten divos", "pulkstenīs divos", "plkst divos"
     const hourWords = [
       ['vienpadsmit', 11], ['divpadsmit', 12],
       ['vienos', 1], ['divos', 2], ['trijos', 3], ['četros', 4], ['piecos', 5], ['sešos', 6], ['septiņos', 7], ['astoņos', 8], ['deviņos', 9], ['desmitos', 10],
@@ -398,11 +399,13 @@ function parseWithCode(text, nowISO, langHint) {
     ];
     function extractWordTime(l) {
       let h = null, m = 0;
+      // Remove "pulksten", "pulkstenīs", "plkst", "plkst." before matching
+      const cleaned = l.replace(/\b(pulksten|pulkstenīs|plkst\.?)\b/gi, '').trim();
       for (const [w, val] of hourWords) {
-        if (l.includes(w)) { h = val; break; }
+        if (cleaned.includes(w)) { h = val; break; }
       }
       for (const [w, val] of minuteWords) {
-        if (l.includes(w)) { m = val; break; }
+        if (cleaned.includes(w)) { m = val; break; }
       }
       return h != null ? { h, m } : null;
     }
@@ -1189,14 +1192,18 @@ app.post("/ingest-audio", async (req, res) => {
       logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, score, parsed);
       
       return res.json(parsed);
+    } else {
+      console.log(`🧭 Parser v2 returned null, falling back to LLM`);
     }
   }
 
   // Ja v2 neizdevās vai nav ieslēgts – krītam atpakaļ uz LLM
-    let chat;
-    const maxRetries = 2;
-    let retryCount = 0;
-    
+  console.log(`🤖 LLM fallback: parsing with GPT for "${analyzedText.substring(0, 50)}..."`);
+  let chat;
+  const maxRetries = 2;
+  let retryCount = 0;
+  
+  try {
     while (retryCount <= maxRetries) {
       try {
         chat = await safeCreate(
@@ -1211,10 +1218,14 @@ app.post("/ingest-audio", async (req, res) => {
             temperature: 0
           })
         );
+        console.log(`✅ LLM response received`);
         break; // Success
       } catch (error) {
         retryCount++;
-        if (retryCount > maxRetries) throw error;
+        if (retryCount > maxRetries) {
+          console.error(`❌ LLM call failed after ${maxRetries} retries: ${error.message}`);
+          throw error;
+        }
         
         // Exponential backoff: 500ms, 1000ms
         const delay = 500 * Math.pow(2, retryCount - 1);
@@ -1222,12 +1233,72 @@ app.post("/ingest-audio", async (req, res) => {
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
+  } catch (llmError) {
+    // If LLM completely fails, create a fallback reminder
+    console.error(`❌ LLM parsing failed completely: ${llmError.message}`);
+    const fallbackOut = { 
+      type: "reminder", 
+      lang: langHint || "lv", 
+      start: nowISO, 
+      description: analyzedText || norm, 
+      hasTime: false 
+    };
+    fallbackOut.raw_transcript = raw;
+    fallbackOut.normalized_transcript = norm;
+    fallbackOut.analyzed_transcript = analyzedText;
+    fallbackOut.analysis_applied = needsAnalysis;
+    fallbackOut.confidence = score;
+    
+    // Count quota even for fallback
+    u.daily.used += 1;
+    operationsTotal.inc({ status: "success", plan: limits.plan }, 1);
+    await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
+    databaseOperations.inc({ operation: "update", table: "quota_usage" }, 1);
+    quotaUsage.inc({ plan: limits.plan, type: "daily" }, 1);
+    if (limits.plan === "pro") { quotaUsage.inc({ plan: limits.plan, type: "monthly" }, 1); }
+    
+    fallbackOut.quota = {
+      plan: limits.plan,
+      dailyLimit: normalizeDaily(limits.dailyLimit),
+      dailyUsed: u.daily.used,
+      dailyRemaining: limits.dailyLimit >= 999999 ? null : Math.max(0, limits.dailyLimit - u.daily.used),
+      dailyGraceLimit: GRACE_DAILY,
+      dailyGraceUsed: u.daily.graceUsed
+    };
+    if (limits.plan === 'pro') {
+      fallbackOut.quota.monthlyLimit = limits.monthlyLimit;
+      fallbackOut.quota.monthlyUsed = u.monthly.used;
+      fallbackOut.quota.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
+    }
+    fallbackOut.requestId = req.requestId;
+    const processingTime = Date.now() - processingStart;
+    audioProcessingTime.observe({ status: "success" }, processingTime);
+    
+    logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, score, fallbackOut);
+    return res.json(fallbackOut);
+  }
 
     let out;
     try {
-      out = JSON.parse(chat.choices?.[0]?.message?.content || "{}");
-    } catch {
-      out = { type: "reminder", lang: langHint, start: nowISO, description: norm, hasTime: false };
+      const content = chat?.choices?.[0]?.message?.content || "{}";
+      out = JSON.parse(content);
+      
+      // Validate that out has required fields
+      if (!out.type || (!out.description && !out.items)) {
+        console.warn(`⚠️ LLM returned invalid JSON, missing type or description. Content: ${content.substring(0, 100)}`);
+        // Create fallback reminder
+        out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
+      }
+    } catch (parseError) {
+      console.error(`❌ JSON parse error: ${parseError.message}`);
+      // Create fallback reminder
+      out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
+    }
+
+    // Ensure out has required fields before proceeding
+    if (!out.type) {
+      console.error(`❌ Critical: out object missing type field. Creating fallback reminder.`);
+      out = { type: "reminder", lang: langHint || "lv", start: nowISO, description: analyzedText || norm, hasTime: false };
     }
 
     // Pārbaudām vai ir masīvs ar reminderiem
