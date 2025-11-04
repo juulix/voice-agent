@@ -26,8 +26,10 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 /* ===== OPENAI HELPER FUNCTIONS ===== */
 // Modeļi, kam NEDRĪKST sūtīt temperature (atsevišķi transcribe/realtime)
+// GPT-5 mini arī neatbalsta temperature (tikai default 1)
 const FIXED_TEMP_MODELS = new Set([
   "gpt-4o-mini-transcribe",
+  "gpt-5-mini",
   "gpt-realtime",
 ]);
 
@@ -745,52 +747,47 @@ Piemēri:
 - "Atgādinu, ka pie vesetiņu uz dzimšanas dienu" → "Atgādinu, ka pie vectētiņu uz dzimšanas dienu" (vectētiņu, nevis veselīšu)`;
 
 /* ===== JSON Schema definīcijas ===== */
+// OpenAI JSON Schema neatbalsta oneOf, tāpēc izmantojam vienkāršāku struktūru
+// Visi lauki ir optional, bet type ir required
 const EVENT_SCHEMA = {
   name: "calendar_or_reminder",
   schema: {
     type: "object",
-    oneOf: [
-      {
-        title: "reminder",
-        type: "object",
-        properties: {
-          type:        { const: "reminder" },
-          lang:        { type: "string", const: "lv" },
-          description: { type: "string", minLength: 2 },
-          start:       { type: "string", description: "ISO 8601, Europe/Riga", pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}" },
-          hasTime:     { type: "boolean" },
-          timezone:    { type: "string", const: "Europe/Riga" }
-        },
-        required: ["type", "lang", "description", "start", "hasTime"],
-        additionalProperties: false
+    properties: {
+      type: {
+        type: "string",
+        enum: ["reminder", "calendar", "shopping"]
       },
-      {
-        title: "calendar",
-        type: "object",
-        properties: {
-          type:        { const: "calendar" },
-          lang:        { type: "string", const: "lv" },
-          description: { type: "string", minLength: 2 },
-          start:       { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}" },
-          end:         { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}" },
-          timezone:    { type: "string", const: "Europe/Riga" }
-        },
-        required: ["type", "lang", "description", "start", "end"],
-        additionalProperties: false
+      lang: {
+        type: "string",
+        const: "lv"
       },
-      {
-        title: "shopping",
-        type: "object",
-        properties: {
-          type:        { const: "shopping" },
-          lang:        { type: "string", const: "lv" },
-          items:       { type: "string", minLength: 2 },
-          description: { type: "string" }
-        },
-        required: ["type", "lang", "items"],
-        additionalProperties: false
+      description: {
+        type: "string",
+        minLength: 2
+      },
+      start: {
+        type: "string",
+        description: "ISO 8601, Europe/Riga, format: YYYY-MM-DDTHH:MM",
+        pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}"
+      },
+      end: {
+        type: "string",
+        description: "ISO 8601, Europe/Riga, format: YYYY-MM-DDTHH:MM (required for calendar)",
+        pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}"
+      },
+      hasTime: {
+        type: "boolean",
+        description: "Required for reminder type"
+      },
+      items: {
+        type: "string",
+        minLength: 2,
+        description: "Required for shopping type"
       }
-    ]
+    },
+    required: ["type", "lang"],
+    additionalProperties: false
   }
 };
 
