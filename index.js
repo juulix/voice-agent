@@ -1025,7 +1025,7 @@ app.post("/ingest-audio", async (req, res) => {
         try {
           // Combined LV analysis (saves 1 AI call by doing both general + shopping analysis in one call)
           const analysis = await openai.chat.completions.create({
-            model: "gpt-4o-mini", // gpt-5-nano has limited API support
+            model: "gpt-5-mini", // Testing GPT-5 mini
             temperature: 0,
             max_tokens: 200, // Limit output for cost savings
             messages: [
@@ -1127,7 +1127,7 @@ app.post("/ingest-audio", async (req, res) => {
     while (retryCount <= maxRetries) {
       try {
         chat = await openai.chat.completions.create({
-          model: "gpt-4o-mini", // gpt-5-nano has limited API support
+          model: "gpt-5-mini", // Testing GPT-5 mini
           temperature: 0,
           response_format: { type: "json_object" },
           max_tokens: 300, // Limit output for cost savings
