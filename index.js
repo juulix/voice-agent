@@ -831,6 +831,10 @@ function isValidCalendarJson(obj) {
   if (obj.type === "shopping") {
     return !!(obj.items && obj.lang);
   }
+  if (obj.type === "reminders") {
+    // Multi-reminder atbalsts
+    return !!(Array.isArray(obj.reminders) && obj.reminders.length > 0 && obj.lang);
+  }
   return false;
 }
 
