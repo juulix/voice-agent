@@ -34,8 +34,8 @@ const FIXED_TEMP_MODELS = new Set([
 ]);
 
 // Noklusētie modeļi (vieglāk mainīt vienuviet)
-const DEFAULT_TEXT_MODEL = "gpt-5-mini";   // galvenajām operācijām
-const CHEAP_TASK_MODEL  = "gpt-5-nano";    // kopsavilkumi/klasifikācija u.tml. (ja gribi lietot)
+const DEFAULT_TEXT_MODEL = "gpt-4.1-mini";   // galvenajām operācijām
+const CHEAP_TASK_MODEL  = "gpt-4.1-mini";    // kopsavilkumi/klasifikācija u.tml.
 
 /**
  * Build OpenAI API parameters with automatic temperature and token handling
@@ -486,7 +486,7 @@ function parseWithCode(text, nowISO, langHint) {
     const wordTime = extractWordTime(lower);
     
     // Debug: log parser state (vienmēr, lai redzētu kas notiek)
-    console.log(`🔍 Parser v2 state: text="${t.substring(0, 50)}", wordTime=${JSON.stringify(wordTime)}, baseDay=${baseDay.toISOString().substring(0, 10)}, hasRelativeDay=${/\b(rīt|rītdien|rīta|parīt|šodien)\b/.test(lower)}`);
+    console.log(`🔍 Parser v2 state: text="${t.substring(0, 50)}", wordTime=${JSON.stringify(wordTime)}, baseDay=${baseDay.toISOString().substring(0, 10)}, hasRelativeDay=${/\b(rīt|rītdien|rīta|parīt|šodien)\b/.test(lower)}, lower="${lower.substring(0, 50)}"`);
 
     // Interval: "no 9 līdz 11" or "no 09:00 līdz 11:00"
     const mInterval = lower.match(/no\s+(\d{1,2})(?::(\d{2}))?\s+līdz\s+(\d{1,2})(?::(\d{2}))?/);
@@ -500,8 +500,10 @@ function parseWithCode(text, nowISO, langHint) {
       endDate = applyTime(baseDay, 9, 30);
     } else if (wordTime) {
       // Prioritizēt vārdiskos laikus (desmitos, deviņos trīsdesmit) pirms skaitliskajiem
+      console.log(`🔍 Parser v2: wordTime found: ${JSON.stringify(wordTime)}, applying to baseDay ${baseDay.toISOString().substring(0, 10)}`);
       startDate = applyTime(baseDay, wordTime.h, wordTime.m);
       endDate = applyTime(baseDay, ((wordTime.h + 1) % 24), wordTime.m);
+      console.log(`🔍 Parser v2: startDate=${startDate ? startDate.toISOString() : 'null'}, endDate=${endDate ? endDate.toISOString() : 'null'}`);
     } else if (mHHMM) {
       const hh = parseInt(mHHMM[1], 10); const mm = parseInt(mHHMM[2], 10);
       startDate = applyTime(baseDay, hh, mm);
