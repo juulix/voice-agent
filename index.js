@@ -529,13 +529,15 @@ class LatvianCalendarParserV3 {
   parse(text, nowISO, langHint = 'lv') {
     try {
       if (!text || typeof text !== 'string') return null;
-      
+
       // Validate and parse nowISO
       let now = new Date(nowISO);
       if (isNaN(now.getTime())) {
         console.error('❌ parse: invalid nowISO, using current time. nowISO:', nowISO);
         now = new Date();
       }
+
+      console.log(`🕐 Parser v3 parse() - nowISO: ${nowISO}, now: ${now.toISOString()}, day: ${now.getDay()} (0=Sun, 3=Wed, 5=Fri)`);
       
       const normalized = this.normalize(text);
       const lower = normalized.toLowerCase();
@@ -663,11 +665,13 @@ class LatvianCalendarParserV3 {
     // 2. Check weekdays (pirmdien, otrdien, etc.)
     for (const [word, targetIsoDay] of this.weekdays) {
       if (lower.includes(word)) {
+        console.log(`📆 extractDate: found weekday "${word}" (ISO day ${targetIsoDay}), now: ${now.toISOString()}`);
         const date = this.getNextWeekday(now, targetIsoDay);
-        return { 
-          baseDate: date, 
-          type: 'weekday', 
-          targetIsoDay 
+        console.log(`📆 extractDate: getNextWeekday returned: ${date.toISOString()}`);
+        return {
+          baseDate: date,
+          type: 'weekday',
+          targetIsoDay
         };
       }
     }
@@ -724,11 +728,13 @@ class LatvianCalendarParserV3 {
   getNextWeekday(current, targetIsoDay) {
     const cur = new Date(current);
     const curIsoDay = ((cur.getDay() + 6) % 7) + 1; // Convert to ISO (1=Mon, 7=Sun)
-    
+
+    console.log(`🔄 getNextWeekday: current=${cur.toISOString()}, curDay=${cur.getDay()}, curIsoDay=${curIsoDay}, targetIsoDay=${targetIsoDay}`);
+
     let offset = targetIsoDay - curIsoDay;
-    
+
     // If same day (offset === 0), return today
-    // Time validation will happen in buildResult - if time has passed, 
+    // Time validation will happen in buildResult - if time has passed,
     // buildResult will adjust to next week
     if (offset === 0) {
       // Return today - let buildResult handle time validation
@@ -738,7 +744,9 @@ class LatvianCalendarParserV3 {
       offset += 7;
     }
     // If offset > 0, target is in future this week, use that offset
-    
+
+    console.log(`🔄 getNextWeekday: offset=${offset}, result will be ${cur.getDate() + offset} ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][cur.getDay()]}`);
+
     const result = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + offset, 0, 0, 0);
     return result;
   }
@@ -2225,6 +2233,7 @@ app.post("/ingest-audio", async (req, res) => {
 
   // Parser V3 vienmēr ieslēgts visiem lietotājiem
   console.log(`🧭 Parser v3 attempting parse: "${analyzedText}"`);
+  console.log(`📅 nowISO being used: ${nowISO} (from ${fields.currentTime ? 'client' : 'server'})`);
   const parsed = parseWithV3(analyzedText, nowISO, langHint);
   
   // Validate Parser V3 result - check if time makes sense
