@@ -749,7 +749,8 @@ class LatvianCalendarParserV3 {
       // Check for afternoon day-parts
       const afternoon = /pēcpusdienā|pēc pusdienas|pēcpusdien/.test(lower);
       // Check for morning/daytime day-parts (keep as AM)
-      const morning = /no rīta|rītos|agrā rīta|agri no rīta|pusdienlaikā|pusdienās|pusdienlaiks/.test(lower);
+      // "rīta" = "no rīta" (genitive form)
+      const morning = /no rīta|rītos|rīta|agrā rīta|agri no rīta|pusdienlaikā|pusdienās|pusdienlaiks/.test(lower);
       
       // If morning/daytime, keep hour as is (AM)
       if (morning) {
@@ -772,29 +773,74 @@ class LatvianCalendarParserV3 {
       }
       
       // Latvian convention: if no explicit "no rīta" and hour is 1-11, assume PM (vakarā)
+      // BUT: only apply if there's explicit evening/afternoon context OR hour is 1-9 (not 10-11)
       // Exception: hours 0-6 are typically AM (night/early morning)
       // Exception: hour 12 is noon (12:00), not midnight
-      if (!morning && hour >= 1 && hour <= 11) {
+      // Exception: hours 10-11 without context are typically AM (10:00, 11:00)
+      if (!morning && hour >= 1 && hour <= 9) {
         // Check if there's explicit night context
         const isNightContext = /naktī|naktīs|agrā rīta|agri no rīta/.test(lower);
         if (!isNightContext) {
-          // Assume PM (vakarā) for hours 1-11 without morning context
+          // Assume PM (vakarā) for hours 1-9 without morning context
           return { hour: hour + 12, minute };
         }
+      }
+      // For hours 10-11, only apply PM if there's explicit evening/afternoon context
+      if (!morning && (hour === 10 || hour === 11)) {
+        const isNightContext = /naktī|naktīs|agrā rīta|agri no rīta/.test(lower);
+        if ((eveningNight || afternoon) && !isNightContext) {
+          // Explicit evening/afternoon context for 10-11 → PM
+          return { hour: hour + 12, minute };
+        }
+        // Otherwise, keep as AM (10:00, 11:00)
       }
       
       // Default: keep hour as is (AM or already 24h format)
       return { hour, minute };
     };
 
-    // 1. FIRST: Check interval (no 9 līdz 11) - highest priority
-    const intervalMatch = lower.match(/no\s+(\d{1,2})(?::(\d{2}))?\s+līdz\s+(\d{1,2})(?::(\d{2}))?/);
+    // 1. FIRST: Check interval (no 9 līdz 11 OR no diviem līdz četriem) - highest priority
+    // Try numeric interval first
+    let intervalMatch = lower.match(/no\s+(\d{1,2})(?::(\d{2}))?\s+līdz\s+(\d{1,2})(?::(\d{2}))?/);
+    let sh = null, sm = 0, eh = null, em = 0;
+    
     if (intervalMatch) {
-      const sh = parseInt(intervalMatch[1], 10);
-      const sm = intervalMatch[2] ? parseInt(intervalMatch[2], 10) : 0;
-      const eh = parseInt(intervalMatch[3], 10);
-      const em = intervalMatch[4] ? parseInt(intervalMatch[4], 10) : 0;
-      
+      sh = parseInt(intervalMatch[1], 10);
+      sm = intervalMatch[2] ? parseInt(intervalMatch[2], 10) : 0;
+      eh = parseInt(intervalMatch[3], 10);
+      em = intervalMatch[4] ? parseInt(intervalMatch[4], 10) : 0;
+    } else {
+      // Try word-based interval (no diviem līdz četriem)
+      const intervalWordMatch = lower.match(/no\s+(\w+)\s+līdz\s+(\w+)/);
+      if (intervalWordMatch) {
+        const startWord = intervalWordMatch[1];
+        const endWord = intervalWordMatch[2];
+        
+        // Find hour words for start and end
+        for (const [word, value] of this.hourWords) {
+          if (startWord.includes(word) || word.includes(startWord)) {
+            sh = value;
+            break;
+          }
+        }
+        for (const [word, value] of this.hourWords) {
+          if (endWord.includes(word) || word.includes(endWord)) {
+            eh = value;
+            break;
+          }
+        }
+        
+        // If both found, treat as interval
+        if (sh !== null && eh !== null) {
+          console.log(`🔍 extractTime: found word interval - start=${sh}, end=${eh}`);
+        } else {
+          sh = null;
+          eh = null;
+        }
+      }
+    }
+    
+    if (sh !== null && eh !== null) {
       // Apply PM conversion to interval times
       const startConverted = applyPMConversion(sh, sm, lower);
       const endConverted = applyPMConversion(eh, em, lower);
@@ -931,9 +977,17 @@ class LatvianCalendarParserV3 {
     let h = null, m = 0;
     let foundHourWord = null;
     
-    // Check hour words
+    // Check hour words - but skip if followed by "minūtēm" (e.g., "desmit minūtēm" = minutes, not hours)
     for (const [word, value] of this.hourWords) {
       if (lower.includes(word)) {
+        // Check if this word is part of "X minūtēm" pattern (minutes, not hours)
+        const wordIndex = lower.indexOf(word);
+        const afterWord = lower.substring(wordIndex + word.length);
+        // If "minūtēm" or "minūtēs" appears right after this word (with optional spaces), skip it
+        if (/^\s*minūt(ēm|ēs|u)/.test(afterWord)) {
+          console.log(`🔍 extractWordTime: skipping hour word "${word}" (part of "X minūtēm" pattern)`);
+          continue;
+        }
         h = value;
         foundHourWord = word;
         console.log(`🔍 extractWordTime: found hour word "${word}" = ${value} in "${lower}"`);
@@ -996,8 +1050,38 @@ class LatvianCalendarParserV3 {
       baseDate = new Date();
     }
     
-    const date = new Date(baseDate);
-    date.setHours(hour, minute, 0, 0);
+    // Get date parts in Europe/Riga timezone
+    const tz = "Europe/Riga";
+    const dtf = new Intl.DateTimeFormat("en-GB", {
+      timeZone: tz,
+      year: "numeric", month: "2-digit", day: "2-digit"
+    });
+    const partsArr = dtf.formatToParts(baseDate);
+    const parts = Object.fromEntries(partsArr.map(p => [p.type, p.value]));
+    
+    // Get current offset for this date in Europe/Riga
+    const offsetDtf = new Intl.DateTimeFormat("en-GB", {
+      timeZone: tz,
+      timeZoneName: "shortOffset"
+    });
+    const offsetParts = offsetDtf.formatToParts(baseDate);
+    const offsetStr = offsetParts.find(p => p.type === 'timeZoneName')?.value || '+02:00';
+    
+    // Normalize offset to +HH:MM format
+    const offsetMatch = offsetStr.match(/^GMT([+-])(\d{1,2})(?::(\d{2}))?/);
+    let offset = '+02:00'; // Default
+    if (offsetMatch) {
+      const sign = offsetMatch[1];
+      const hours = offsetMatch[2].padStart(2, '0');
+      const minutes = offsetMatch[3] || '00';
+      offset = `${sign}${hours}:${minutes}`;
+    }
+    
+    // Create ISO string with specified hour/minute in Europe/Riga timezone
+    const dateStr = `${parts.year}-${parts.month}-${parts.day}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00${offset}`;
+    
+    // Parse the ISO string (this will create a Date object representing the correct time)
+    const date = new Date(dateStr);
     
     // Validate result
     if (isNaN(date.getTime())) {
@@ -1009,10 +1093,46 @@ class LatvianCalendarParserV3 {
   }
 
   buildResult({ type, text, dateInfo, timeInfo, duration, langHint, now }) {
+    // Clean description - remove time/date info from text
+    let cleanDescription = text;
+    
+    // Remove common time/date patterns
+    // Remove: "rīt", "šodien", "parīt", "vakar"
+    cleanDescription = cleanDescription.replace(/\b(rīt|šodien|parīt|vakar|rītdien|parītdien|vakardien)\b/gi, '');
+    
+    // Remove: "pulksten", "pulkstenis", "pulkstens"
+    cleanDescription = cleanDescription.replace(/\bpulksten(is|s)?\b/gi, '');
+    
+    // Remove: time words (desmitos, divos, trijos, etc.)
+    const timeWordPattern = /\b(vienā|divos|trijos|četros|piecos|sešos|septiņos|astoņos|deviņos|desmitos|vienpadsmitos|divpadsmitos|vienam|diviem|trijiem|četriem|pieciem|sešiem|septiņiem|astoņiem|deviņiem|desmitiem|vienpadsmitiem|divpadsmitiem)\b/gi;
+    cleanDescription = cleanDescription.replace(timeWordPattern, '');
+    
+    // Remove: numeric times (14:00, 14.00, etc.)
+    cleanDescription = cleanDescription.replace(/\b\d{1,2}[.:]\d{2}\b/g, '');
+    
+    // Remove: day parts (no rīta, vakarā, etc.)
+    const dayPartPattern = /\b(no rīta|rītos|rīta|agrā rīta|agri no rīta|pusdienlaikā|pusdienās|pēcpusdienā|pēc pusdienas|vakarā|vakaros|naktī|naktīs|pusnaktī)\b/gi;
+    cleanDescription = cleanDescription.replace(dayPartPattern, '');
+    
+    // Remove: weekdays
+    const weekdayPattern = /\b(pirmdien|otrdien|trešdien|ceturtdien|piektdien|sestdien|svētdien)(a|u|ā)?\b/gi;
+    cleanDescription = cleanDescription.replace(weekdayPattern, '');
+    
+    // Remove: "nākamnedēļ", "nākamajā nedēļā"
+    cleanDescription = cleanDescription.replace(/\bnākam(nedēļ|ajā nedēļā)\b/gi, '');
+    
+    // Clean up multiple spaces and trim
+    cleanDescription = cleanDescription.replace(/\s+/g, ' ').trim();
+    
+    // If description is empty after cleaning, use original text
+    if (!cleanDescription || cleanDescription.length < 3) {
+      cleanDescription = text;
+    }
+    
     const result = {
       type,
       lang: langHint,
-      description: text
+      description: cleanDescription
     };
 
     // If no explicit time info
