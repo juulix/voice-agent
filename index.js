@@ -894,7 +894,7 @@ class LatvianCalendarParserV3 {
     }
 
     // Fix: if start is in past and dateInfo.isToday, might need to adjust
-    if (dateInfo.isToday && startDate < now) {
+    if (dateInfo.isToday && startDate && startDate < now) {
       // If time has passed today, move to next occurrence of weekday
       if (dateInfo.type === 'weekday' && dateInfo.targetIsoDay) {
         startDate = this.getNextWeekday(now, dateInfo.targetIsoDay);
@@ -916,6 +916,11 @@ class LatvianCalendarParserV3 {
   }
 
   toRigaISO(date) {
+    if (!date || !(date instanceof Date) || isNaN(date.getTime())) {
+      console.error('❌ toRigaISO: invalid date, using now');
+      date = new Date();
+    }
+    
     const tz = "Europe/Riga";
     const dtf = new Intl.DateTimeFormat("en-GB", {
       timeZone: tz,
@@ -942,7 +947,23 @@ const parserV3 = new LatvianCalendarParserV3();
  * @returns {Object|null} Parsed result
  */
 function parseWithV3(text, nowISO, langHint = 'lv') {
-  return parserV3.parse(text, nowISO, langHint);
+  try {
+    const result = parserV3.parse(text, nowISO, langHint);
+    
+    // Validate result
+    if (result && result.start) {
+      const testDate = new Date(result.start);
+      if (isNaN(testDate.getTime())) {
+        console.error('❌ parseWithV3: Invalid start date:', result.start);
+        return null;
+      }
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('❌ parseWithV3 error:', error.message, 'Input:', text.substring(0, 50));
+    return null; // Graceful fallback to LLM
+  }
 }
 
 function normalizeForParser(text) {
