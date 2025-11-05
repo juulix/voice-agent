@@ -647,8 +647,8 @@ class LatvianCalendarParserV3 {
       const dateInfo = this.extractDate(lower, now);
       if (!dateInfo) return null;
 
-      // 4. Extract time
-      const timeInfo = this.extractTime(lower, now, dateInfo.baseDate);
+      // 4. Extract time (pass dateInfo for date-first precedence)
+      const timeInfo = this.extractTime(lower, now, dateInfo.baseDate, dateInfo);
       
       // 5. Extract duration (for calendar events)
       const duration = this.extractDuration(lower);
@@ -936,7 +936,7 @@ class LatvianCalendarParserV3 {
     return result;
   }
 
-  extractTime(lower, now, baseDate) {
+  extractTime(lower, now, baseDate, dateInfo = null) {
     const result = {
       hasExplicitTime: false,
       start: null,
@@ -944,6 +944,12 @@ class LatvianCalendarParserV3 {
       hour: null,
       minute: 0
     };
+    
+    // DATE-FIRST PRECEDENCE: Check if we have a specific date with numeric day
+    // If dateInfo.type === 'specific_date', block any numeric hour parsing that could conflict
+    // (e.g., "23. decembra" should NOT parse "23" as hour)
+    const hasSpecificDate = dateInfo && (dateInfo.type === 'specific_date' || dateInfo.day);
+    const dateDayNumber = hasSpecificDate ? (dateInfo.day || null) : null;
 
     // Helper: Apply PM conversion based on day-part context
     const applyPMConversion = (hour, minute, lower) => {
@@ -964,9 +970,18 @@ class LatvianCalendarParserV3 {
         return { hour, minute };
       }
       
-      // If morning/daytime, keep hour as is (AM)
-      if (morning) {
-        console.log(`🔍 PM conversion: morning context detected, keeping hour=${hour} (AM)`);
+      // IMPORTANT: Evening/night OVERRIDE morning (e.g., "rīt sešos vakarā" → 18:00, not 06:00)
+      // If evening/night context is present, it takes precedence over morning
+      if (eveningNight && hour >= 1 && hour < 12) {
+        const newHour = hour + 12;
+        console.log(`🔍 PM conversion: evening/night OVERRIDE - ${hour} → ${newHour} (${hour} PM, evening > morning)`);
+        return { hour: newHour, minute };
+      }
+      
+      // If morning/daytime (and no evening override), keep hour as is (AM)
+      if (morning && !eveningNight) {
+        const hourLabel = hour === 12 ? 'noon' : hour === 0 ? 'midnight' : 'AM';
+        console.log(`🔍 PM conversion: morning context detected, keeping hour=${hour} (${hourLabel})`);
         return { hour, minute };
       }
       
@@ -976,15 +991,8 @@ class LatvianCalendarParserV3 {
         return { hour: 0, minute, rolloverDay: true };
       }
       
-      // Apply PM conversion for evening/night (1-11 PM)
-      if (eveningNight && hour >= 1 && hour < 12) {
-        const newHour = hour + 12;
-        console.log(`🔍 PM conversion: evening/night context - ${hour} → ${newHour} (${hour} PM)`);
-        return { hour: newHour, minute };
-      }
-      
-      // Apply PM conversion for afternoon (1-11 PM)
-      if (afternoon && hour >= 1 && hour < 12) {
+      // Apply PM conversion for afternoon (1-11 PM) - but only if no morning override
+      if (afternoon && hour >= 1 && hour < 12 && !morning) {
         const newHour = hour + 12;
         console.log(`🔍 PM conversion: afternoon context - ${hour} → ${newHour} (${hour} PM)`);
         return { hour: newHour, minute };
@@ -1009,8 +1017,15 @@ class LatvianCalendarParserV3 {
         console.log(`🔍 PM conversion: no explicit evening/afternoon context, keeping hour=${hour} (AM)`);
       }
       
+      // Handle 12:00 (noon) - special case
+      if (hour === 12) {
+        console.log(`🔍 PM conversion: 12:00 (noon) - keeping as 12:00 dienā`);
+        return { hour: 12, minute };
+      }
+      
       // Default: keep hour as is (AM or already 24h format)
-      console.log(`🔍 PM conversion: default - keeping hour=${hour} (no conversion)`);
+      const hourLabel = hour === 0 ? 'midnight' : hour < 12 ? 'AM' : '24h';
+      console.log(`🔍 PM conversion: default - keeping hour=${hour} (${hourLabel})`);
       return { hour, minute };
     };
 
@@ -1149,6 +1164,18 @@ class LatvianCalendarParserV3 {
       const m = parseInt(timeMatch[2], 10);
       
       if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+        // BUSINESS DEFAULT: weekday + meeting activity + early hour (1-7) + no daypart → PM
+        const isWeekday = dateInfo && dateInfo.type === 'weekday';
+        const isMeetingActivity = /(tikšanās|sapulce|zoom|prezentācija|meeting|konference)/i.test(lower);
+        const isEarlyHour = h >= 1 && h <= 7;
+        const hasDaypart = /(no rīta|rītos|vakarā|naktī|pusdienlaikā|pēcpusdienā)/i.test(lower);
+        
+        if (isWeekday && isMeetingActivity && isEarlyHour && !hasDaypart) {
+          const newHour = h + 12;
+          console.log(`🔍 Business default: weekday + meeting + early hour (${h}) + no daypart → ${newHour} (${h} PM)`);
+          h = newHour;
+        }
+        
         // Apply PM conversion based on day-part context
         const converted = applyPMConversion(h, m, lower);
         h = converted.hour;
@@ -1169,11 +1196,30 @@ class LatvianCalendarParserV3 {
     }
 
     // 2b. SECOND: Check single hour (pulksten 10, just "10") - but only if no HH:MM found
+    // IMPORTANT: Block if this number matches a date day (date-first precedence)
     if (!timeMatch) {
       const hourMatch = lower.match(/\b(\d{1,2})\b/);
       if (hourMatch) {
         let h = parseInt(hourMatch[1], 10);
-        if (h >= 0 && h <= 23) {
+        
+        // DATE-FIRST PRECEDENCE: If we have a specific date and this number matches the day, skip it
+        // (e.g., "23. decembra" → "23" is the day, not hour 23:00)
+        if (hasSpecificDate && dateDayNumber !== null && h === dateDayNumber) {
+          console.log(`🔍 extractTime: blocking hour=${h} (matches date day ${dateDayNumber} - date-first precedence)`);
+          // Skip this match - it's part of the date, not a time
+        } else if (h >= 0 && h <= 23) {
+          // BUSINESS DEFAULT: weekday + meeting activity + early hour (1-7) + no daypart → PM
+          const isWeekday = dateInfo && dateInfo.type === 'weekday';
+          const isMeetingActivity = /(tikšanās|sapulce|zoom|prezentācija|meeting|konference)/i.test(lower);
+          const isEarlyHour = h >= 1 && h <= 7;
+          const hasDaypart = /(no rīta|rītos|vakarā|naktī|pusdienlaikā|pēcpusdienā)/i.test(lower);
+          
+          if (isWeekday && isMeetingActivity && isEarlyHour && !hasDaypart) {
+            const newHour = h + 12;
+            console.log(`🔍 Business default: weekday + meeting + early hour (${h}) + no daypart → ${newHour} (${h} PM)`);
+            h = newHour;
+          }
+          
           // Apply PM conversion based on day-part context
           const converted = applyPMConversion(h, 0, lower);
           h = converted.hour;
@@ -1208,6 +1254,19 @@ class LatvianCalendarParserV3 {
       
       // Debug logging
       console.log(`🔍 extractTime: wordTime found - h=${h}, m=${m}, lower="${lower}"`);
+      
+      // BUSINESS DEFAULT: weekday + meeting activity + early hour (1-7) + no daypart → PM
+      // (e.g., "Pirmdien divos Zoom tikšanās" → 14:00, not 02:00)
+      const isWeekday = dateInfo && dateInfo.type === 'weekday';
+      const isMeetingActivity = /(tikšanās|sapulce|zoom|prezentācija|meeting|konference)/i.test(lower);
+      const isEarlyHour = h >= 1 && h <= 7;
+      const hasDaypart = /(no rīta|rītos|vakarā|naktī|pusdienlaikā|pēcpusdienā)/i.test(lower);
+      
+      if (isWeekday && isMeetingActivity && isEarlyHour && !hasDaypart) {
+        const newHour = h + 12;
+        console.log(`🔍 Business default: weekday + meeting + early hour (${h}) + no daypart → ${newHour} (${h} PM)`);
+        h = newHour;
+      }
       
       // Apply PM conversion based on day-part context
       const converted = applyPMConversion(h, m, lower);
@@ -1430,6 +1489,12 @@ class LatvianCalendarParserV3 {
     
     // Clean up multiple spaces and trim
     cleanDescription = cleanDescription.replace(/\s+/g, ' ').trim();
+    
+    // Normalize punctuation artifacts: remove trailing dots/commas after words (e.g., "rīt ." → "rīt")
+    // Remove dots/commas that are followed by nothing or only spaces
+    cleanDescription = cleanDescription.replace(/\s+([.,;:])\s*$/g, ''); // trailing punctuation
+    cleanDescription = cleanDescription.replace(/\s+([.,;:])\s+/g, ' '); // punctuation between words
+    cleanDescription = cleanDescription.replace(/\s+/g, ' ').trim(); // final cleanup
     
     // If description is empty after cleaning, use original text
     if (!cleanDescription || cleanDescription.length < 3) {
@@ -1671,6 +1736,27 @@ function detectTriggers(text, lower) {
     if (/no\s+(\d+|vienam|diviem|trijiem|četriem|pieciem|sešiem|septiņiem|astoņiem|deviņiem|desmitiem|vienpadsmitiem|divpadsmitiem)\s+līdz\s+(\d+|vienam|diviem|trijiem|četriem|pieciem|sešiem|septiņiem|astoņiem|deviņiem|desmitiem|vienpadsmitiem|divpadsmitiem)/gi.test(lower)) {
       triggers.push('interval');
     }
+  }
+  
+  // Date range trigger (no X. mēneša līdz Y. mēnesim)
+  if (/no\s+\d{1,2}\.\s*(janvār|februār|mart|aprīl|maij|jūnij|jūlij|august|septembr|oktobr|novembr|decembr)(?:ī|a|ā)?\s+līdz\s+\d{1,2}\.\s*(janvār|februār|mart|aprīl|maij|jūnij|jūlij|august|septembr|oktobr|novembr|decembr)(?:ī|a|ā)?/i.test(lower)) {
+    triggers.push('date_range');
+  }
+  
+  // Mixed numerics trigger (datums ar punktu + stundas vārdi - augsts kļūdas risks)
+  const hasDateWithDot = /\d{1,2}\.\s*(janvār|februār|mart|aprīl|maij|jūnij|jūlij|august|septembr|oktobr|novembr|decembr)/i.test(lower);
+  const hasTimeWord = /\b(vienā|divos|trijos|četros|piecos|sešos|septiņos|astoņos|deviņos|desmitos|vienpadsmitos|divpadsmitos)\b/i.test(lower);
+  if (hasDateWithDot && hasTimeWord) {
+    triggers.push('mixed_numerics');
+  }
+  
+  // Weekday + early hour + meeting trigger (ja biznesa heuristika neizšķir)
+  const hasWeekday = /(pirmdien|otrdien|trešdien|ceturtdien|piektdien|sestdien|svētdien)/i.test(lower);
+  const hasEarlyHour = /\b(vienā|divos|trijos|četros|piecos|sešos|septiņos)\b/i.test(lower);
+  const hasMeeting = /(tikšanās|sapulce|zoom|prezentācija|meeting|konference)/i.test(lower);
+  const hasDaypart = /(no rīta|rītos|vakarā|naktī|pusdienlaikā|pēcpusdienā)/i.test(lower);
+  if (hasWeekday && hasEarlyHour && hasMeeting && !hasDaypart) {
+    triggers.push('weekday_early_hour_meeting');
   }
   
   // Relative multi trigger
@@ -2910,18 +2996,18 @@ Kontrole: Ja teksts satur laika/relatīva konteksta vārdus, saglabā tos. Atgri
 Atgriez TIKAI uzlaboto tekstu, bez skaidrojumiem.`;
         }
         
-        const descriptionCheck = await safeCreate(
-          buildParams({
-            model: DEFAULT_TEXT_MODEL,
-            messages: [
+      const descriptionCheck = await safeCreate(
+        buildParams({
+          model: DEFAULT_TEXT_MODEL,
+          messages: [
               { role: "system", content: systemPrompt },
-              { role: "user", content: `Uzlabo šo aprakstu: "${finalDescription}"` }
-            ],
-            max: 200,
-            temperature: 0
-          })
-        );
-        const improvedDescription = (descriptionCheck.choices?.[0]?.message?.content || finalDescription).trim();
+            { role: "user", content: `Uzlabo šo aprakstu: "${finalDescription}"` }
+          ],
+          max: 200,
+          temperature: 0
+        })
+      );
+      const improvedDescription = (descriptionCheck.choices?.[0]?.message?.content || finalDescription).trim();
         
         // Validate that GPT didn't remove time/context words (conservative mode only)
         if (descGptMode === 'conservative') {
@@ -2945,16 +3031,16 @@ Atgriez TIKAI uzlaboto tekstu, bez skaidrojumiem.`;
           }
         } else {
           // Aggressive mode: trust GPT
-          if (improvedDescription && improvedDescription.length > 0 && improvedDescription !== finalDescription) {
-            console.log(`✅ GPT improved description: "${finalDescription}" → "${improvedDescription}"`);
-            finalDescription = improvedDescription;
-          } else {
-            console.log(`ℹ️ GPT kept description unchanged`);
+      if (improvedDescription && improvedDescription.length > 0 && improvedDescription !== finalDescription) {
+        console.log(`✅ GPT improved description: "${finalDescription}" → "${improvedDescription}"`);
+        finalDescription = improvedDescription;
+      } else {
+        console.log(`ℹ️ GPT kept description unchanged`);
           }
-        }
-      } catch (descError) {
-        console.warn(`⚠️ GPT description check failed: ${descError.message}, using Parser V3 description`);
-        // Keep original description from Parser V3
+      }
+    } catch (descError) {
+      console.warn(`⚠️ GPT description check failed: ${descError.message}, using Parser V3 description`);
+      // Keep original description from Parser V3
       }
     } else {
       console.log(`ℹ️ GPT description check disabled (DESC_GPT_ENABLED=${descGptEnabled}, mode=${descGptMode})`);
