@@ -2146,6 +2146,38 @@ app.post("/ingest-audio", async (req, res) => {
   // Ja Parser v3 atgriež objektu ar pietiekamu confidence (≥0.8) UN validācija iziet, izmanto to bez LLM
   if (shouldUseParser) {
     console.log(`🧭 Parser v3 used (confidence: ${parsed.confidence}): type=${parsed.type}, start=${parsed.start}, end=${parsed.end || 'none'}`);
+    
+    // GPT pārbaude teksta kvalitātei (kamēr testējam) - uzlabo tikai description
+    let finalDescription = parsed.description;
+    try {
+      console.log(`🤖 GPT checking description quality: "${finalDescription}"`);
+      const descriptionCheck = await safeCreate(
+        buildParams({
+          model: DEFAULT_TEXT_MODEL,
+          messages: [
+            { 
+              role: "system", 
+              content: `Tu esi latviešu valodas eksperts. Uzlabo šo teksta aprakstu, noņemot laiku, datumu un nevajadzīgas detaļas. Saglabā tikai būtiskāko informāciju. Atgriez TIKAI uzlaboto tekstu, bez skaidrojumiem.`
+            },
+            { role: "user", content: `Uzlabo šo aprakstu: "${finalDescription}"` }
+          ],
+          max: 200,
+          temperature: 0
+        })
+      );
+      const improvedDescription = (descriptionCheck.choices?.[0]?.message?.content || finalDescription).trim();
+      if (improvedDescription && improvedDescription.length > 0 && improvedDescription !== finalDescription) {
+        console.log(`✅ GPT improved description: "${finalDescription}" → "${improvedDescription}"`);
+        finalDescription = improvedDescription;
+      } else {
+        console.log(`ℹ️ GPT kept description unchanged`);
+      }
+    } catch (descError) {
+      console.warn(`⚠️ GPT description check failed: ${descError.message}, using Parser V3 description`);
+      // Keep original description from Parser V3
+    }
+    
+    parsed.description = finalDescription;
     parsed.raw_transcript = raw;
     parsed.normalized_transcript = norm;
     parsed.analyzed_transcript = analyzedText;
