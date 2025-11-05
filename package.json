@@ -2,9 +2,11 @@
   "name": "voice-agent-busboy",
   "version": "1.0.0",
   "type": "module",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.27.0",
+    "@anthropic-ai/sdk": "^0.27.3",
     "@sentry/node": "^8.0.0",
     "busboy": "^1.6.0",
     "express": "^4.19.2",
