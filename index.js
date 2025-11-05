@@ -720,6 +720,39 @@ class LatvianCalendarParserV3 {
       minute: 0
     };
 
+    // Helper: Apply PM conversion based on day-part context
+    const applyPMConversion = (hour, minute, lower) => {
+      // Check for evening/night day-parts
+      const eveningNight = /vakarā|vēlu vakarā|naktī|naktīs/.test(lower);
+      // Check for afternoon day-parts
+      const afternoon = /pēcpusdienā|pēc pusdienas|pēcpusdien/.test(lower);
+      // Check for morning/daytime day-parts (keep as AM)
+      const morning = /no rīta|rītos|agrā rīta|agri no rīta|pusdienlaikā|pusdienās|pusdienlaiks/.test(lower);
+      
+      // If morning/daytime, keep hour as is (AM)
+      if (morning) {
+        return { hour, minute };
+      }
+      
+      // Edge case: "divpadsmitos vakarā" → midnight (00:00 next day)
+      if (eveningNight && hour === 12) {
+        return { hour: 0, minute, rolloverDay: true };
+      }
+      
+      // Apply PM conversion for evening/night
+      if (eveningNight && hour < 12) {
+        return { hour: hour + 12, minute };
+      }
+      
+      // Apply PM conversion for afternoon (1-11 PM)
+      if (afternoon && hour >= 1 && hour < 12) {
+        return { hour: hour + 12, minute };
+      }
+      
+      // Default: keep hour as is (AM or already 24h format)
+      return { hour, minute };
+    };
+
     // 1. FIRST: Check interval (no 9 līdz 11) - highest priority
     const intervalMatch = lower.match(/no\s+(\d{1,2})(?::(\d{2}))?\s+līdz\s+(\d{1,2})(?::(\d{2}))?/);
     if (intervalMatch) {
@@ -728,12 +761,29 @@ class LatvianCalendarParserV3 {
       const eh = parseInt(intervalMatch[3], 10);
       const em = intervalMatch[4] ? parseInt(intervalMatch[4], 10) : 0;
       
+      // Apply PM conversion to interval times
+      const startConverted = applyPMConversion(sh, sm, lower);
+      const endConverted = applyPMConversion(eh, em, lower);
+      
+      let startDate = this.setTime(baseDate, startConverted.hour, startConverted.minute);
+      let endDate = this.setTime(baseDate, endConverted.hour, endConverted.minute);
+      
+      // Handle day rollover for midnight
+      if (startConverted.rolloverDay) {
+        startDate = new Date(startDate);
+        startDate.setDate(startDate.getDate() + 1);
+      }
+      if (endConverted.rolloverDay) {
+        endDate = new Date(endDate);
+        endDate.setDate(endDate.getDate() + 1);
+      }
+      
       return {
         hasExplicitTime: true,
-        start: this.setTime(baseDate, sh, sm),
-        end: this.setTime(baseDate, eh, em),
-        hour: sh,
-        minute: sm,
+        start: startDate,
+        end: endDate,
+        hour: startConverted.hour,
+        minute: startConverted.minute,
         isInterval: true
       };
     }
@@ -741,14 +791,25 @@ class LatvianCalendarParserV3 {
     // 2. SECOND: Check numeric time (HH:MM) - higher priority than day-parts
     const timeMatch = lower.match(/\b(\d{1,2}):(\d{2})\b/);
     if (timeMatch) {
-      const h = parseInt(timeMatch[1], 10);
+      let h = parseInt(timeMatch[1], 10);
       const m = parseInt(timeMatch[2], 10);
       
       if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+        // Apply PM conversion based on day-part context
+        const converted = applyPMConversion(h, m, lower);
+        h = converted.hour;
+        
+        let startDate = this.setTime(baseDate, h, converted.minute);
+        // Handle day rollover for midnight
+        if (converted.rolloverDay) {
+          startDate = new Date(startDate);
+          startDate.setDate(startDate.getDate() + 1);
+        }
+        
         result.hasExplicitTime = true;
         result.hour = h;
-        result.minute = m;
-        result.start = this.setTime(baseDate, h, m);
+        result.minute = converted.minute;
+        result.start = startDate;
         return result; // Return immediately - numeric time has priority
       }
     }
@@ -757,12 +818,23 @@ class LatvianCalendarParserV3 {
     if (!timeMatch) {
       const hourMatch = lower.match(/\b(\d{1,2})\b/);
       if (hourMatch) {
-        const h = parseInt(hourMatch[1], 10);
+        let h = parseInt(hourMatch[1], 10);
         if (h >= 0 && h <= 23) {
+          // Apply PM conversion based on day-part context
+          const converted = applyPMConversion(h, 0, lower);
+          h = converted.hour;
+          
+          let startDate = this.setTime(baseDate, h, 0);
+          // Handle day rollover for midnight
+          if (converted.rolloverDay) {
+            startDate = new Date(startDate);
+            startDate.setDate(startDate.getDate() + 1);
+          }
+          
           result.hasExplicitTime = true;
           result.hour = h;
           result.minute = 0;
-          result.start = this.setTime(baseDate, h, 0);
+          result.start = startDate;
           return result; // Return immediately - numeric time has priority
         }
       }
@@ -771,17 +843,31 @@ class LatvianCalendarParserV3 {
     // 3. THIRD: Check word time (desmitos, deviņos trīsdesmit) - higher priority than day-parts
     const wordTime = this.extractWordTime(lower);
     if (wordTime) {
-      result.hasExplicitTime = true;
-      result.hour = Math.floor(wordTime.h);
-      result.minute = wordTime.m;
+      let h = Math.floor(wordTime.h);
+      let m = wordTime.m;
       
       // Handle half hours (pusdeviņos = 8:30)
       if (wordTime.h % 1 !== 0) {
-        result.hour = Math.floor(wordTime.h);
-        result.minute = 30;
+        h = Math.floor(wordTime.h);
+        m = 30;
       }
       
-      result.start = this.setTime(baseDate, result.hour, result.minute);
+      // Apply PM conversion based on day-part context
+      const converted = applyPMConversion(h, m, lower);
+      h = converted.hour;
+      m = converted.minute;
+      
+      let startDate = this.setTime(baseDate, h, m);
+      // Handle day rollover for midnight
+      if (converted.rolloverDay) {
+        startDate = new Date(startDate);
+        startDate.setDate(startDate.getDate() + 1);
+      }
+      
+      result.hasExplicitTime = true;
+      result.hour = h;
+      result.minute = m;
+      result.start = startDate;
       return result; // Return immediately - word time has priority over day-parts
     }
 
