@@ -1284,33 +1284,56 @@ class LatvianCalendarParserV3 {
   }
 
   buildResult({ type, text, lower, dateInfo, timeInfo, duration, langHint, now }) {
-    // Clean description - remove time/date info from text
+    // Clean description - remove ONLY structured time/date info, KEEP contextual info
     let cleanDescription = text;
     
-    // Remove common time/date patterns
-    // Remove: "rīt", "šodien", "parīt", "vakar"
-    cleanDescription = cleanDescription.replace(/\b(rīt|šodien|parīt|vakar|rītdien|parītdien|vakardien)\b/gi, '');
+    // Track what we're keeping for logging
+    const semanticTagsKept = {
+      relativeDate: false,
+      weekday: false,
+      daypart: false,
+      relativeTime: false
+    };
     
-    // Remove: "pulksten", "pulkstenis", "pulkstens"
+    // SAGLABĀT relatīvos datumus (rīt, šodien, parīt, nākamnedēļ)
+    // Check if we have relative dates - if yes, mark them to keep
+    if (/\b(rīt|rītdien|šodien|parīt|parītdien|nākamnedēļ|nākamajā nedēļā)\b/gi.test(cleanDescription)) {
+      semanticTagsKept.relativeDate = true;
+      // Keep these words - don't remove them
+    }
+    
+    // SAGLABĀT nedēļas dienas (pirmdien, trešdien, svētdien)
+    if (/\b(pirmdien|otrdien|trešdien|ceturtdien|piektdien|sestdien|svētdien)(a|u|ā)?\b/gi.test(cleanDescription)) {
+      semanticTagsKept.weekday = true;
+      // Keep these words - don't remove them
+    }
+    
+    // SAGLABĀT diennakts daļas (no rīta, vakarā, naktī, pusdienlaikā)
+    if (/\b(no rīta|rītos|rīta|agrā rīta|agri no rīta|pusdienlaikā|pusdienās|pēcpusdienā|pēc pusdienas|vakarā|vakaros|naktī|naktīs|pusnaktī|pēc darba)\b/gi.test(cleanDescription)) {
+      semanticTagsKept.daypart = true;
+      // Keep these words - don't remove them
+    }
+    
+    // SAGLABĀT relatīvos laikus (pēc X stundām, pēc X minūtēm)
+    if (/\b(pēc\s+(\d+|vienas?|divām|trim|četrām|piecām)\s+(stundām|minūtēm|stundas|minūtes))\b/gi.test(cleanDescription)) {
+      semanticTagsKept.relativeTime = true;
+      // Keep these phrases - don't remove them
+    }
+    
+    // NOŅEM tikai strukturētos laikus/datumus (kas jau ir start/end laukos)
+    // Remove: "pulksten", "pulkstenis", "pulkstens" (these are structure words, not context)
     cleanDescription = cleanDescription.replace(/\bpulksten(is|s)?\b/gi, '');
     
-    // Remove: time words (desmitos, divos, trijos, etc.)
+    // Remove: time words (desmitos, divos, trijos, etc.) - these are parsed to start/end
     const timeWordPattern = /\b(vienā|divos|trijos|četros|piecos|sešos|septiņos|astoņos|deviņos|desmitos|vienpadsmitos|divpadsmitos|vienam|diviem|trijiem|četriem|pieciem|sešiem|septiņiem|astoņiem|deviņiem|desmitiem|vienpadsmitiem|divpadsmitiem)\b/gi;
     cleanDescription = cleanDescription.replace(timeWordPattern, '');
     
-    // Remove: numeric times (14:00, 14.00, etc.)
+    // Remove: numeric times (14:00, 14.00, etc.) - these are parsed to start/end
     cleanDescription = cleanDescription.replace(/\b\d{1,2}[.:]\d{2}\b/g, '');
     
-    // Remove: day parts (no rīta, vakarā, etc.)
-    const dayPartPattern = /\b(no rīta|rītos|rīta|agrā rīta|agri no rīta|pusdienlaikā|pusdienās|pēcpusdienā|pēc pusdienas|vakarā|vakaros|naktī|naktīs|pusnaktī)\b/gi;
-    cleanDescription = cleanDescription.replace(dayPartPattern, '');
-    
-    // Remove: weekdays
-    const weekdayPattern = /\b(pirmdien|otrdien|trešdien|ceturtdien|piektdien|sestdien|svētdien)(a|u|ā)?\b/gi;
-    cleanDescription = cleanDescription.replace(weekdayPattern, '');
-    
-    // Remove: "nākamnedēļ", "nākamajā nedēļā"
-    cleanDescription = cleanDescription.replace(/\bnākam(nedēļ|ajā nedēļā)\b/gi, '');
+    // Remove: specific numeric dates (15. novembrī, 2025-11-15) - these are parsed to start/end
+    cleanDescription = cleanDescription.replace(/\b\d{1,2}\.\s*(janvār|februār|mart|aprīl|maij|jūnij|jūlij|august|septembr|oktobr|novembr|decembr)(ī|a|ā)?\b/gi, '');
+    cleanDescription = cleanDescription.replace(/\b\d{4}-\d{2}-\d{2}\b/g, '');
     
     // Clean up multiple spaces and trim
     cleanDescription = cleanDescription.replace(/\s+/g, ' ').trim();
@@ -1320,10 +1343,14 @@ class LatvianCalendarParserV3 {
       cleanDescription = text;
     }
     
+    // Log semantic tags kept for monitoring
+    console.log(`📝 Description cleaning: kept semantic tags:`, semanticTagsKept);
+    
     const result = {
       type,
       lang: langHint,
-      description: cleanDescription
+      description: cleanDescription,
+      _semanticTagsKept: semanticTagsKept // For monitoring/logging
     };
 
     // If no explicit time info
@@ -2388,37 +2415,123 @@ app.post("/ingest-audio", async (req, res) => {
   if (shouldUseParser) {
     console.log(`🧭 Parser v3 used (confidence: ${parsed.confidence}): type=${parsed.type}, start=${parsed.start}, end=${parsed.end || 'none'}`);
     
-    // GPT pārbaude teksta kvalitātei (kamēr testējam) - uzlabo tikai description
+    // GPT pārbaude teksta kvalitātei - ar feature flag sistēmu
     let finalDescription = parsed.description;
-    try {
-      console.log(`🤖 GPT checking description quality: "${finalDescription}"`);
-      const descriptionCheck = await safeCreate(
-        buildParams({
-          model: DEFAULT_TEXT_MODEL,
-          messages: [
-            { 
-              role: "system", 
-              content: `Tu esi latviešu valodas eksperts. Uzlabo šo teksta aprakstu, noņemot laiku, datumu un nevajadzīgas detaļas. Saglabā tikai būtiskāko informāciju. Atgriez TIKAI uzlaboto tekstu, bez skaidrojumiem.`
-            },
-            { role: "user", content: `Uzlabo šo aprakstu: "${finalDescription}"` }
-          ],
-          max: 200,
-          temperature: 0
-        })
-      );
-      const improvedDescription = (descriptionCheck.choices?.[0]?.message?.content || finalDescription).trim();
-      if (improvedDescription && improvedDescription.length > 0 && improvedDescription !== finalDescription) {
-        console.log(`✅ GPT improved description: "${finalDescription}" → "${improvedDescription}"`);
-        finalDescription = improvedDescription;
-      } else {
-        console.log(`ℹ️ GPT kept description unchanged`);
+    const descriptionBefore = finalDescription;
+    
+    // Feature flags: DESC_GPT_ENABLED (default: off for testing) and DESC_GPT_MODE (off|conservative|aggressive)
+    const descGptEnabled = process.env.DESC_GPT_ENABLED === 'true';
+    const descGptMode = (process.env.DESC_GPT_MODE || 'off').toLowerCase();
+    
+    // Determine if GPT should be used
+    const shouldUseGpt = descGptEnabled && (descGptMode === 'conservative' || descGptMode === 'aggressive');
+    
+    if (shouldUseGpt) {
+      try {
+        console.log(`🤖 GPT checking description quality (mode: ${descGptMode}): "${finalDescription}"`);
+        
+        // Build prompt based on mode
+        let systemPrompt;
+        if (descGptMode === 'conservative') {
+          // Conservative mode: preserve context, only improve grammar/styling
+          systemPrompt = `Tu esi latviešu valodas eksperts. Uzlabo šo teksta aprakstu, saglabājot svarīgo kontekstu:
+
+⚠️ AIZLIEĒ JĀNOŅEM:
+- NEKAD neliec ārā/nenovāc relatīvos laikus (rīt, šodien, parīt, nākamnedēļ)
+- NEKAD neliec ārā nedēļas dienas (pirmdien, trešdien, svētdien)
+- NEKAD neliec ārā diennakts daļas (no rīta, vakarā, naktī, pusdienlaikā)
+- NEKAD neliec ārā relatīvos laikus (pēc X stundām, pēc X minūtēm)
+- NEKAD neliec ārā lokācijas (dārznīcībā, pie vectētiņa)
+- NEKAD neliec ārā personu vārdus (ar Juri, ar valdi)
+
+✅ ATĻAUTS:
+- Labot gramatiku un pareizrakstību
+- Saīsināt liekvārdību (bet saglabāt nozīmi)
+- Normalizēt vārdu galotnes
+- Uzlabot stilu un skaidrību
+
+Kontrole: Ja teksts satur laika/relatīva konteksta vārdus, saglabā tos. Atgriez TIKAI uzlaboto tekstu, bez skaidrojumiem.`;
+        } else {
+          // Aggressive mode: similar but allows more editing
+          systemPrompt = `Tu esi latviešu valodas eksperts. Uzlabo šo teksta aprakstu:
+
+⚠️ SAGLABĀT:
+- Relatīvos laikus (rīt, šodien, parīt, nākamnedēļ)
+- Nedēļas dienas (pirmdien, trešdien, svētdien)
+- Diennakts daļas (no rīta, vakarā, naktī, pusdienlaikā)
+- Lokācijas un personu vārdus
+
+✅ UZLABOT:
+- Gramatiku, pareizrakstību, stilu
+- Skaidrību un skaidrību
+
+Atgriez TIKAI uzlaboto tekstu, bez skaidrojumiem.`;
+        }
+        
+        const descriptionCheck = await safeCreate(
+          buildParams({
+            model: DEFAULT_TEXT_MODEL,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: `Uzlabo šo aprakstu: "${finalDescription}"` }
+            ],
+            max: 200,
+            temperature: 0
+          })
+        );
+        const improvedDescription = (descriptionCheck.choices?.[0]?.message?.content || finalDescription).trim();
+        
+        // Validate that GPT didn't remove time/context words (conservative mode only)
+        if (descGptMode === 'conservative') {
+          const hadRelativeDate = /\b(rīt|rītdien|šodien|parīt|parītdien|nākamnedēļ|nākamajā nedēļā)\b/gi.test(descriptionBefore);
+          const hadWeekday = /\b(pirmdien|otrdien|trešdien|ceturtdien|piektdien|sestdien|svētdien)(a|u|ā)?\b/gi.test(descriptionBefore);
+          const hadDaypart = /\b(no rīta|rītos|vakarā|naktī|pusdienlaikā)\b/gi.test(descriptionBefore);
+          
+          const hasRelativeDate = /\b(rīt|rītdien|šodien|parīt|parītdien|nākamnedēļ|nākamajā nedēļā)\b/gi.test(improvedDescription);
+          const hasWeekday = /\b(pirmdien|otrdien|trešdien|ceturtdien|piektdien|sestdien|svētdien)(a|u|ā)?\b/gi.test(improvedDescription);
+          const hasDaypart = /\b(no rīta|rītos|vakarā|naktī|pusdienlaikā)\b/gi.test(improvedDescription);
+          
+          // If GPT removed time context, keep original
+          if ((hadRelativeDate && !hasRelativeDate) || (hadWeekday && !hasWeekday) || (hadDaypart && !hasDaypart)) {
+            console.warn(`⚠️ GPT removed time context, keeping original description`);
+            finalDescription = descriptionBefore;
+          } else if (improvedDescription && improvedDescription.length > 0 && improvedDescription !== finalDescription) {
+            console.log(`✅ GPT improved description: "${finalDescription}" → "${improvedDescription}"`);
+            finalDescription = improvedDescription;
+          } else {
+            console.log(`ℹ️ GPT kept description unchanged`);
+          }
+        } else {
+          // Aggressive mode: trust GPT
+          if (improvedDescription && improvedDescription.length > 0 && improvedDescription !== finalDescription) {
+            console.log(`✅ GPT improved description: "${finalDescription}" → "${improvedDescription}"`);
+            finalDescription = improvedDescription;
+          } else {
+            console.log(`ℹ️ GPT kept description unchanged`);
+          }
+        }
+      } catch (descError) {
+        console.warn(`⚠️ GPT description check failed: ${descError.message}, using Parser V3 description`);
+        // Keep original description from Parser V3
       }
-    } catch (descError) {
-      console.warn(`⚠️ GPT description check failed: ${descError.message}, using Parser V3 description`);
-      // Keep original description from Parser V3
+    } else {
+      console.log(`ℹ️ GPT description check disabled (DESC_GPT_ENABLED=${descGptEnabled}, mode=${descGptMode})`);
+    }
+    
+    // Log description changes for monitoring (with semantic tags)
+    const semanticTagsKept = parsed._semanticTagsKept || {};
+    if (descriptionBefore !== finalDescription) {
+      console.log(`📝 Description changed: "${descriptionBefore}" → "${finalDescription}"`);
+      console.log(`📝 Semantic tags kept:`, semanticTagsKept);
+    } else {
+      console.log(`📝 Description unchanged: "${finalDescription}"`);
+      console.log(`📝 Semantic tags kept:`, semanticTagsKept);
     }
     
     parsed.description = finalDescription;
+    parsed.description_before = descriptionBefore; // For monitoring
+    parsed.desc_gpt_used = shouldUseGpt; // For monitoring
+    parsed.desc_gpt_mode = descGptMode; // For monitoring
     parsed.raw_transcript = raw;
     parsed.normalized_transcript = norm;
     parsed.analyzed_transcript = analyzedText;
