@@ -15,7 +15,11 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
 
 // Claude/Teacher configuration
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || process.env.ECHOTIME_ONBOARDING_API_KEY;
+// Meklē API key dažādos environment variable nosaukumos (Railway var būt ar domuzīmēm vai citādāk)
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY 
+  || process.env.ECHOTIME_ONBOARDING_API_KEY 
+  || process.env['ECHOTIME-ONBOARDING-API-KEY'] // Railway var būt ar domuzīmēm
+  || process.env.echotime_onboarding_api_key; // lowercase
 const anthropic = ANTHROPIC_API_KEY ? new Anthropic({ apiKey: ANTHROPIC_API_KEY }) : null;
 
 // Initialize Sentry
@@ -53,14 +57,37 @@ const STRICT_TRIGGERS = (process.env.STRICT_TRIGGERS || 'am_pm,interval,relative
 // Debug: Log Teacher-Student mode status (after all config is defined)
 console.log(`🔍 Teacher-Student Learning Mode: ${LEARNING_MODE ? 'ON' : 'OFF'}`);
 const hasAnthropicKey = !!ANTHROPIC_API_KEY;
-const keySource = process.env.ANTHROPIC_API_KEY ? 'ANTHROPIC_API_KEY' : (process.env.ECHOTIME_ONBOARDING_API_KEY ? 'ECHOTIME_ONBOARDING_API_KEY' : 'none');
-console.log(`🔍 Anthropic API Key: ${hasAnthropicKey ? `found (${keySource})` : 'NOT found'}`);
+// Atklāt, kurš environment variable satur key
+let keySource = 'none';
+if (process.env.ANTHROPIC_API_KEY) keySource = 'ANTHROPIC_API_KEY';
+else if (process.env.ECHOTIME_ONBOARDING_API_KEY) keySource = 'ECHOTIME_ONBOARDING_API_KEY';
+else if (process.env['ECHOTIME-ONBOARDING-API-KEY']) keySource = 'ECHOTIME-ONBOARDING-API-KEY';
+else if (process.env.echotime_onboarding_api_key) keySource = 'echotime_onboarding_api_key';
+
+// Debug: rādīt visus environment variables, kas satur "anthropic" vai "onboarding"
+const debugEnvVars = Object.keys(process.env).filter(k => 
+  k.toLowerCase().includes('anthropic') || 
+  k.toLowerCase().includes('onboarding') ||
+  k.toLowerCase().includes('claude')
+);
+if (debugEnvVars.length > 0) {
+  console.log(`🔍 Found related env vars: ${debugEnvVars.join(', ')}`);
+}
+
+console.log(`🔍 Anthropic API Key: ${hasAnthropicKey ? `found ✅ (${keySource})` : 'NOT found ❌'}`);
+if (hasAnthropicKey) {
+  const keyPreview = ANTHROPIC_API_KEY.substring(0, 10) + '...' + ANTHROPIC_API_KEY.substring(ANTHROPIC_API_KEY.length - 4);
+  console.log(`   Key preview: ${keyPreview} (length: ${ANTHROPIC_API_KEY.length})`);
+}
 console.log(`🔍 Anthropic API: ${anthropic ? 'initialized ✅' : 'NOT configured ❌'}`);
 if (LEARNING_MODE && anthropic) {
   console.log(`✅ Teacher-Student mode ready: model=${TEACHER_MODEL}, rate=${TEACHER_RATE}, thresholds=[${CONFIDENCE_THRESHOLD_LOW}-${CONFIDENCE_THRESHOLD_HIGH}]`);
 } else if (LEARNING_MODE && !anthropic) {
   console.warn(`⚠️ Teacher-Student mode is ON but Anthropic API is NOT configured!`);
   console.warn(`   Please set ANTHROPIC_API_KEY or ECHOTIME_ONBOARDING_API_KEY in Railway variables.`);
+  if (debugEnvVars.length > 0) {
+    console.warn(`   Found similar env vars: ${debugEnvVars.join(', ')}`);
+  }
 }
 
 /**
