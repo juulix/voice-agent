@@ -356,8 +356,17 @@ function toRigaISO(d) {
   });
   const partsArr = dtf.formatToParts(d);
   const parts = Object.fromEntries(partsArr.map(p => [p.type, p.value]));
-  // parts.timeZoneName like "GMT+02:00" → extract "+02:00"
-  const offset = (parts.timeZoneName || "GMT+00:00").replace(/^GMT/, "");
+  // parts.timeZoneName like "GMT+02:00" or "GMT+2" → normalize to "+HH:MM"
+  let offset = (parts.timeZoneName || "GMT+00:00").replace(/^GMT/, "");
+
+  // FIX: Normalize offset to +HH:MM format (handle "+2" or "+3" from some Node.js versions)
+  if (offset && !/[+-]\d{2}:\d{2}/.test(offset)) {
+    const match = offset.match(/([+-])(\d{1,2})/);
+    if (match) {
+      offset = `${match[1]}${match[2].padStart(2, '0')}:00`;
+    }
+  }
+
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${offset}`;
 }
 
@@ -553,6 +562,7 @@ class LatvianCalendarParserV3 {
       return this.buildResult({
         type,
         text: normalized,
+        lower,
         dateInfo,
         timeInfo,
         duration,
@@ -799,7 +809,43 @@ class LatvianCalendarParserV3 {
       return { hour, minute };
     };
 
-    // 1. FIRST: Check interval (no 9 līdz 11 OR no diviem līdz četriem) - highest priority
+    // 0. FIRST: Check dynamic relative time patterns (pēc X minūtēm/stundām) - HIGHEST priority
+    const relMinMatch = lower.match(/pēc\s+(\d+)\s*min/);
+    const relHourMatch = lower.match(/pēc\s+(\d+)\s*stund/);
+    const relWordMatch = lower.match(/pēc\s+(pusotras|stundas|pusstundas)/);
+
+    if (relMinMatch || relHourMatch || relWordMatch) {
+      let offsetMs = 0;
+
+      if (relMinMatch) {
+        const mins = parseInt(relMinMatch[1], 10);
+        offsetMs = mins * 60 * 1000;
+        console.log(`🔍 extractTime: dynamic relative time - +${mins} minutes`);
+      } else if (relHourMatch) {
+        const hours = parseInt(relHourMatch[1], 10);
+        offsetMs = hours * 60 * 60 * 1000;
+        console.log(`🔍 extractTime: dynamic relative time - +${hours} hours`);
+      } else if (relWordMatch) {
+        const word = relWordMatch[1];
+        const mins = word === 'pusstundas' ? 30 : word === 'pusotras' ? 90 : 60;
+        offsetMs = mins * 60 * 1000;
+        console.log(`🔍 extractTime: dynamic relative time - ${word} = +${mins} minutes`);
+      }
+
+      const futureDate = new Date(now.getTime() + offsetMs);
+      const endDate = new Date(futureDate.getTime() + 60 * 60 * 1000); // +1h default duration
+
+      return {
+        hasExplicitTime: true,
+        start: futureDate,
+        end: endDate,
+        hour: futureDate.getHours(),
+        minute: futureDate.getMinutes(),
+        isRelativeTime: true
+      };
+    }
+
+    // 1. SECOND: Check interval (no 9 līdz 11 OR no diviem līdz četriem)
     // Try numeric interval first
     let intervalMatch = lower.match(/no\s+(\d{1,2})(?::(\d{2}))?\s+līdz\s+(\d{1,2})(?::(\d{2}))?/);
     let sh = null, sm = 0, eh = null, em = 0;
@@ -1092,7 +1138,7 @@ class LatvianCalendarParserV3 {
     return date;
   }
 
-  buildResult({ type, text, dateInfo, timeInfo, duration, langHint, now }) {
+  buildResult({ type, text, lower, dateInfo, timeInfo, duration, langHint, now }) {
     // Clean description - remove time/date info from text
     let cleanDescription = text;
     
@@ -1140,7 +1186,16 @@ class LatvianCalendarParserV3 {
       // Pure reminder without time
       result.hasTime = false;
       result.start = this.toRigaISO(dateInfo.baseDate);
-      result.confidence = 0.85;
+
+      // Dynamic confidence calculation
+      let confidence = 0.85; // base
+      // Boost for explicit day
+      if (dateInfo.type === 'relative_day' || dateInfo.type === 'weekday') confidence += 0.05;
+      // Boost for explicit type keywords
+      if (/(tikšanās|sapulce|atgādini|reminder|meeting)/i.test(lower)) confidence += 0.03;
+      // Cap at 0.95
+      result.confidence = Math.min(0.95, confidence);
+
       return result;
     }
 
@@ -1199,14 +1254,34 @@ class LatvianCalendarParserV3 {
     }
 
     result.start = this.toRigaISO(startDate);
-    
+
     if (type === 'calendar') {
       result.end = this.toRigaISO(endDate);
     } else {
       result.hasTime = true;
     }
-    
-    result.confidence = 0.92;
+
+    // Dynamic confidence calculation (with explicit time)
+    let confidence = 0.85; // base
+
+    // Boost for explicit time
+    if (timeInfo.hasExplicitTime || dateInfo.hasExactTime || timeInfo.isRelativeTime) {
+      confidence += 0.07;
+    }
+
+    // Boost for explicit day
+    if (dateInfo.type === 'relative_day' || dateInfo.type === 'weekday') {
+      confidence += 0.05;
+    }
+
+    // Boost for explicit type keywords
+    if (/(tikšanās|sapulce|atgādini|reminder|meeting)/i.test(lower)) {
+      confidence += 0.03;
+    }
+
+    // Cap at 0.95
+    result.confidence = Math.min(0.95, confidence);
+
     return result;
   }
 
@@ -1482,6 +1557,13 @@ const LV_COMBINED_ANALYSIS_PROMPT = `Tu esi latviešu valodas eksperts, kas anal
 2. IZLABOT kļūdas - gramatika, pareizrakstība, vārdu formas
 3. UZLABOT skaidrību - padarīt tekstu skaidrāku un precīzāku
 4. SAGLABĀT nozīmi - neizmainīt sākotnējo nozīmi
+
+⚠️ KRITISKS NOTEIKUMS: JA TEKSTS IR NESAPROTAMS VAI NESKAIDRS:
+- ATGRIEZ TO TĀDU PAŠU (NEMAINĪTU)
+- NEKAD neizdomi jaunu nozīmi
+- NEKAD neinterpretē sliktu transkripciju kā citu vārdu
+- Piemērs: "da su mai zeng" → "da su mai zeng" (NE "dažādi suņi")
+- Ja šaubies par nozīmi → atgriez oriģinālu
 
 SAGLABĀT PERSONU VĀRDUS, ĢIMENES RELĀCIJAS UN KONTEKSTU:
 - "WhatsApp sapulce ar Silardu" → "WhatsApp sapulce ar Silardu" (NEMAINĪT)
