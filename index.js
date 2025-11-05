@@ -70,10 +70,24 @@ else if (process.env.echotime_onboarding_api_key) keySource = 'echotime_onboardi
 const debugEnvVars = Object.keys(process.env).filter(k => 
   k.toLowerCase().includes('anthropic') || 
   k.toLowerCase().includes('onboarding') ||
-  k.toLowerCase().includes('claude')
+  k.toLowerCase().includes('claude') ||
+  k.toLowerCase().includes('echo')
 );
 if (debugEnvVars.length > 0) {
   console.log(`🔍 Found related env vars: ${debugEnvVars.join(', ')}`);
+  // Rādīt arī vērtību garumu (bet ne pašu vērtību - drošības pēc)
+  debugEnvVars.forEach(k => {
+    const val = process.env[k];
+    if (val) {
+      const preview = val.substring(0, 10) + '...' + val.substring(val.length - 4);
+      console.log(`   ${k}: length=${val.length}, preview=${preview}`);
+    }
+  });
+} else {
+  console.log(`⚠️ No related env vars found! Checking all env vars...`);
+  // Ja nav atrasts, rādīt visus env vars (pirmos 20)
+  const allEnvVars = Object.keys(process.env).slice(0, 20);
+  console.log(`   Sample env vars: ${allEnvVars.join(', ')}`);
 }
 
 console.log(`🔍 Anthropic API Key: ${hasAnthropicKey ? `found ✅ (${keySource})` : 'NOT found ❌'}`);
