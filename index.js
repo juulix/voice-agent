@@ -18,13 +18,6 @@ if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1);
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || process.env.ECHOTIME_ONBOARDING_API_KEY;
 const anthropic = ANTHROPIC_API_KEY ? new Anthropic({ apiKey: ANTHROPIC_API_KEY }) : null;
 
-// Debug: Log Teacher-Student mode status
-console.log(`🔍 Teacher-Student Learning Mode: ${LEARNING_MODE ? 'ON' : 'OFF'}`);
-console.log(`🔍 Anthropic API: ${anthropic ? 'initialized' : 'NOT configured (ANTHROPIC_API_KEY missing)'}`);
-if (LEARNING_MODE && anthropic) {
-  console.log(`✅ Teacher-Student mode ready: model=${TEACHER_MODEL}, rate=${TEACHER_RATE}, thresholds=[${CONFIDENCE_THRESHOLD_LOW}-${CONFIDENCE_THRESHOLD_HIGH}]`);
-}
-
 // Initialize Sentry
 if (process.env.SENTRY_DSN) {
   Sentry.init({ 
@@ -56,6 +49,13 @@ const TEACHER_RATE = parseFloat(process.env.TEACHER_RATE || '0.3'); // Max 30% o
 const CONFIDENCE_THRESHOLD_HIGH = parseFloat(process.env.CONFIDENCE_THRESHOLD_HIGH || '0.8');
 const CONFIDENCE_THRESHOLD_LOW = parseFloat(process.env.CONFIDENCE_THRESHOLD_LOW || '0.5');
 const STRICT_TRIGGERS = (process.env.STRICT_TRIGGERS || 'am_pm,interval,relative_multi').split(',').map(s => s.trim());
+
+// Debug: Log Teacher-Student mode status (after all config is defined)
+console.log(`🔍 Teacher-Student Learning Mode: ${LEARNING_MODE ? 'ON' : 'OFF'}`);
+console.log(`🔍 Anthropic API: ${anthropic ? 'initialized' : 'NOT configured (ANTHROPIC_API_KEY missing)'}`);
+if (LEARNING_MODE && anthropic) {
+  console.log(`✅ Teacher-Student mode ready: model=${TEACHER_MODEL}, rate=${TEACHER_RATE}, thresholds=[${CONFIDENCE_THRESHOLD_LOW}-${CONFIDENCE_THRESHOLD_HIGH}]`);
+}
 
 /**
  * Build OpenAI API parameters with automatic temperature and token handling
