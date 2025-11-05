@@ -746,11 +746,21 @@ class LatvianCalendarParserV3 {
     };
 
     // Try numeric date pattern: "7.", "10.", "16." + month name
-    const numericDateMatch = lower.match(/(\d{1,2})\.\s*(janvār|februār|mart|aprīl|maij|jūnij|jūlij|august|septembr|oktobr|novembr|decembr)/i);
+    // Match both full forms (novembrī, janvārī) and short forms (novembr, janvār)
+    const numericDateMatch = lower.match(/(\d{1,2})\.\s*(janvār(?:ī|a)?|februār(?:ī|a)?|mart(?:ā|a)?|aprīl(?:ī|a)?|maij(?:ā|a)?|jūnij(?:ā|a)?|jūlij(?:ā|a)?|august(?:ā|a)?|septembr(?:ī|a)?|oktobr(?:ī|a)?|novembr(?:ī|a)?|decembr(?:ī|a)?)/i);
     if (numericDateMatch) {
       const day = parseInt(numericDateMatch[1], 10);
       const monthName = numericDateMatch[2].toLowerCase();
-      const month = monthNames[monthName] ?? monthNames[Object.keys(monthNames).find(k => monthName.startsWith(k))];
+      
+      // Find matching month - check direct match first, then find key that monthName starts with
+      let month = monthNames[monthName];
+      if (month === undefined) {
+        // Try to find a key that monthName starts with (e.g., "novembr" should match "novembr" or "novembrī")
+        const matchingKey = Object.keys(monthNames).find(k => monthName.startsWith(k) || k.startsWith(monthName));
+        if (matchingKey) {
+          month = monthNames[matchingKey];
+        }
+      }
 
       if (month !== undefined && day >= 1 && day <= 31) {
         const cur = new Date(now);
@@ -761,7 +771,7 @@ class LatvianCalendarParserV3 {
           targetDate.setFullYear(cur.getFullYear() + 1);
         }
 
-        console.log(`📆 extractDate: found numeric date "${numericDateMatch[0]}" → ${targetDate.toISOString()}`);
+        console.log(`📆 Numeric date parsed: day=${day}, monthName="${monthName}", monthNum=${month}, result=${targetDate.toISOString()}`);
         return {
           baseDate: targetDate,
           type: 'specific_date',
@@ -844,6 +854,8 @@ class LatvianCalendarParserV3 {
 
     // Helper: Apply PM conversion based on day-part context
     const applyPMConversion = (hour, minute, lower) => {
+      const originalHour = hour;
+      
       // Check for evening/night day-parts
       const eveningNight = /vakarā|vēlu vakarā|naktī|naktīs/.test(lower);
       // Check for afternoon day-parts
@@ -852,24 +864,36 @@ class LatvianCalendarParserV3 {
       // "rīta" = "no rīta" (genitive form)
       const morning = /no rīta|rītos|rīta|agrā rīta|agri no rīta|pusdienlaikā|pusdienās|pusdienlaiks/.test(lower);
       
+      // Validate hour is in valid range
+      if (hour < 0 || hour > 23) {
+        console.error(`❌ applyPMConversion: invalid hour ${hour}, keeping as is`);
+        return { hour, minute };
+      }
+      
       // If morning/daytime, keep hour as is (AM)
       if (morning) {
+        console.log(`🔍 PM conversion: morning context detected, keeping hour=${hour} (AM)`);
         return { hour, minute };
       }
       
       // Edge case: "divpadsmitos vakarā" → midnight (00:00 next day)
       if (eveningNight && hour === 12) {
+        console.log(`🔍 PM conversion: 12 vakarā → midnight (00:00 next day)`);
         return { hour: 0, minute, rolloverDay: true };
       }
       
-      // Apply PM conversion for evening/night
-      if (eveningNight && hour < 12) {
-        return { hour: hour + 12, minute };
+      // Apply PM conversion for evening/night (1-11 PM)
+      if (eveningNight && hour >= 1 && hour < 12) {
+        const newHour = hour + 12;
+        console.log(`🔍 PM conversion: evening/night context - ${hour} → ${newHour} (${hour} PM)`);
+        return { hour: newHour, minute };
       }
       
       // Apply PM conversion for afternoon (1-11 PM)
       if (afternoon && hour >= 1 && hour < 12) {
-        return { hour: hour + 12, minute };
+        const newHour = hour + 12;
+        console.log(`🔍 PM conversion: afternoon context - ${hour} → ${newHour} (${hour} PM)`);
+        return { hour: newHour, minute };
       }
       
       // Latvian convention: if no explicit "no rīta" and hour is 1-11, assume PM (vakarā)
@@ -882,7 +906,9 @@ class LatvianCalendarParserV3 {
         const isNightContext = /naktī|naktīs|agrā rīta|agri no rīta/.test(lower);
         if (!isNightContext) {
           // Assume PM (vakarā) for hours 1-9 without morning context
-          return { hour: hour + 12, minute };
+          const newHour = hour + 12;
+          console.log(`🔍 PM conversion: no morning context, hour 1-9 - ${hour} → ${newHour} (${hour} PM)`);
+          return { hour: newHour, minute };
         }
       }
       // For hours 10-11, only apply PM if there's explicit evening/afternoon context
@@ -890,12 +916,16 @@ class LatvianCalendarParserV3 {
         const isNightContext = /naktī|naktīs|agrā rīta|agri no rīta/.test(lower);
         if ((eveningNight || afternoon) && !isNightContext) {
           // Explicit evening/afternoon context for 10-11 → PM
-          return { hour: hour + 12, minute };
+          const newHour = hour + 12;
+          console.log(`🔍 PM conversion: evening/afternoon context for 10-11 - ${hour} → ${newHour} (${hour} PM)`);
+          return { hour: newHour, minute };
         }
         // Otherwise, keep as AM (10:00, 11:00)
+        console.log(`🔍 PM conversion: no explicit context for 10-11, keeping hour=${hour} (AM)`);
       }
       
       // Default: keep hour as is (AM or already 24h format)
+      console.log(`🔍 PM conversion: default - keeping hour=${hour} (no conversion)`);
       return { hour, minute };
     };
 
@@ -1096,10 +1126,11 @@ class LatvianCalendarParserV3 {
       
       // Apply PM conversion based on day-part context
       const converted = applyPMConversion(h, m, lower);
+      const originalH = h;
       h = converted.hour;
       m = converted.minute;
       
-      console.log(`🔍 extractTime: after PM conversion - h=${h}, m=${m}, rolloverDay=${converted.rolloverDay}`);
+      console.log(`🔍 PM conversion: original=${originalH}, context="${lower}", after=${h}, rolloverDay=${converted.rolloverDay || false}`);
       
       let startDate = this.setTime(baseDate, h, m);
       // Handle day rollover for midnight
@@ -1358,21 +1389,34 @@ class LatvianCalendarParserV3 {
        startDate.getMonth() === now.getMonth() && 
        startDate.getFullYear() === now.getFullYear());
     
+    // Store original time before checking
+    const originalHour = startDate ? startDate.getHours() : (timeInfo.hour || 9);
+    const originalMinute = startDate ? startDate.getMinutes() : (timeInfo.minute || 0);
+    
+    console.log(`🔄 Same weekday check: isToday=${isToday}, type=${dateInfo.type}, startDate=${startDate?.toISOString()}, now=${now.toISOString()}, timePassed=${startDate && startDate < now}`);
+    
     if (isToday && startDate && startDate < now) {
       // If time has passed today, move to next occurrence
       if (dateInfo.type === 'weekday' && dateInfo.targetIsoDay) {
         // For weekdays, get next occurrence (7 days later)
+        // Only move to next week if time has actually passed
+        console.log(`🔄 Same weekday: time has passed, moving to next week. Original time: ${originalHour}:${originalMinute}`);
         const nextWeekday = new Date(now);
         nextWeekday.setDate(nextWeekday.getDate() + 7);
         startDate = this.getNextWeekday(nextWeekday, dateInfo.targetIsoDay);
-        startDate.setHours(timeInfo.hour || 9, timeInfo.minute || 0, 0, 0);
+        // Preserve the original time (from startDate, not timeInfo which might be wrong)
+        startDate.setHours(originalHour, originalMinute, 0, 0);
         endDate = new Date(startDate.getTime() + (duration || 60) * 60 * 1000);
+        console.log(`🔄 Same weekday: moved to next week, date=${startDate.toISOString()}, time=${originalHour}:${originalMinute}`);
       } else if (dateInfo.isToday) {
         // For other "today" cases, move to tomorrow with same time
         startDate = new Date(startDate);
         startDate.setDate(startDate.getDate() + 1);
         endDate = new Date(startDate.getTime() + (duration || 60) * 60 * 1000);
       }
+    } else if (isToday && startDate && startDate >= now) {
+      // Time has not passed yet, keep today's date
+      console.log(`🔄 Same weekday: time has NOT passed, keeping today. startDate=${startDate.toISOString()}`);
     }
 
     result.start = this.toRigaISO(startDate);
