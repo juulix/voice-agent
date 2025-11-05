@@ -52,9 +52,15 @@ const STRICT_TRIGGERS = (process.env.STRICT_TRIGGERS || 'am_pm,interval,relative
 
 // Debug: Log Teacher-Student mode status (after all config is defined)
 console.log(`🔍 Teacher-Student Learning Mode: ${LEARNING_MODE ? 'ON' : 'OFF'}`);
-console.log(`🔍 Anthropic API: ${anthropic ? 'initialized' : 'NOT configured (ANTHROPIC_API_KEY missing)'}`);
+const hasAnthropicKey = !!ANTHROPIC_API_KEY;
+const keySource = process.env.ANTHROPIC_API_KEY ? 'ANTHROPIC_API_KEY' : (process.env.ECHOTIME_ONBOARDING_API_KEY ? 'ECHOTIME_ONBOARDING_API_KEY' : 'none');
+console.log(`🔍 Anthropic API Key: ${hasAnthropicKey ? `found (${keySource})` : 'NOT found'}`);
+console.log(`🔍 Anthropic API: ${anthropic ? 'initialized ✅' : 'NOT configured ❌'}`);
 if (LEARNING_MODE && anthropic) {
   console.log(`✅ Teacher-Student mode ready: model=${TEACHER_MODEL}, rate=${TEACHER_RATE}, thresholds=[${CONFIDENCE_THRESHOLD_LOW}-${CONFIDENCE_THRESHOLD_HIGH}]`);
+} else if (LEARNING_MODE && !anthropic) {
+  console.warn(`⚠️ Teacher-Student mode is ON but Anthropic API is NOT configured!`);
+  console.warn(`   Please set ANTHROPIC_API_KEY or ECHOTIME_ONBOARDING_API_KEY in Railway variables.`);
 }
 
 /**
@@ -2265,43 +2271,88 @@ app.get("/quota", async (req, res) => {
 
 /* ===== HELPER FUNCTIONS ===== */
 
-// Log transcript flow for debugging
+// Log transcript flow for debugging - PILNĀ TEKSTA PLŪSMA
 function logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, score, out) {
   const requestId = req.requestId.slice(-8);
   const isError = res.statusCode >= 400;
   const debugMode = process.env.DEBUG_TRANSCRIPT === 'true';
+  const alwaysLogFull = process.env.LOG_FULL_TRANSCRIPT === 'true'; // Vienmēr logē pilnu tekstu
   
-  // Kompakts log (vienmēr)
+  // V3 parser rezultāts (pirms GPT description check)
+  const v3Description = out.description_before || out.description;
+  const v3Confidence = out.confidence || out.v3_confidence || 'N/A';
+  
+  // GPT description check rezultāts
+  const gptDescriptionUsed = out.desc_gpt_used || false;
+  const gptDescriptionMode = out.desc_gpt_mode || 'off';
+  const finalDescription = out.description || 'N/A';
+  
+  // PILNS TEKSTA PLŪSMA LOG (vienmēr)
+  console.log(`\n📊 [${requestId}] === TEKSTA PLŪSMA ===`);
+  console.log(`🎤 [1] Whisper (raw):        "${raw}"`);
+  console.log(`🔧 [2] Normalized:          "${norm}"`);
+  if (needsAnalysis) {
+    console.log(`🤖 [3] GPT Analysis:         "${analyzedText}" (score: ${score.toFixed(2)})`);
+  } else {
+    console.log(`✅ [3] GPT Analysis:         SKIP (score: ${score.toFixed(2)} >= 0.6)`);
+  }
+  console.log(`🧭 [4] V3 Parser:            "${v3Description}" (confidence: ${v3Confidence})`);
+  if (gptDescriptionUsed) {
+    console.log(`📝 [5] GPT Description:      "${finalDescription}" (mode: ${gptDescriptionMode})`);
+  } else {
+    console.log(`📝 [5] GPT Description:      SKIP (mode: ${gptDescriptionMode})`);
+  }
+  console.log(`📤 [6] Client Final:         "${finalDescription}" (type: ${out.type})`);
+  if (out.start) console.log(`   └─ Start: ${out.start}`);
+  if (out.end) console.log(`   └─ End: ${out.end}`);
+  console.log(`📊 [${requestId}] ========================\n`);
+  
+  // Kompakts log (backward compatible)
   const whisperShort = raw.length > 50 ? raw.slice(0, 50) + '...' : raw;
   const analyzedShort = analyzedText.length > 50 ? analyzedText.slice(0, 50) + '...' : analyzedText;
-  const finalShort = out.description?.length > 50 ? out.description.slice(0, 50) + '...' : (out.description || 'N/A');
+  const finalShort = finalDescription.length > 50 ? finalDescription.slice(0, 50) + '...' : finalDescription;
   
   let logLine = `📝 [${requestId}] W:"${whisperShort}"`;
   if (needsAnalysis) {
     logLine += ` → GPT:"${analyzedShort}"`;
   }
   logLine += ` → Client:${out.type}:"${finalShort}"`;
+  // console.log(logLine); // Komentēts, jo augšā ir pilnāks log
   
-  console.log(logLine);
-  
-  // Detalizēts log (ja DEBUG_TRANSCRIPT vai error)
-  if (debugMode || isError) {
+  // Detalizēts JSON log (ja DEBUG_TRANSCRIPT vai error)
+  if (debugMode || isError || alwaysLogFull) {
     console.log(JSON.stringify({
       requestId: req.requestId,
+      timestamp: new Date().toISOString(),
       transcriptFlow: {
-        whisper: raw,
+        whisper_raw: raw,
         normalized: norm,
         analyzed: analyzedText,
         analysisApplied: needsAnalysis,
-        confidence: score,
-        final: {
+        qualityScore: score,
+        v3Parser: {
+          description: v3Description,
+          confidence: v3Confidence,
           type: out.type,
-          description: out.description,
+          start: out.start,
+          end: out.end,
+          hasTime: out.hasTime
+        },
+        gptDescriptionCheck: {
+          used: gptDescriptionUsed,
+          mode: gptDescriptionMode,
+          before: out.description_before,
+          after: finalDescription
+        },
+        clientFinal: {
+          type: out.type,
+          description: finalDescription,
           start: out.start,
           end: out.end,
           hasTime: out.hasTime,
           items: out.items
-        }
+        },
+        semanticTagsKept: out._semanticTagsKept || {}
       }
     }, null, 2));
   }
