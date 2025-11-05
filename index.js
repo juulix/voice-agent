@@ -373,6 +373,10 @@ class LatvianCalendarParserV3 {
       ['vienā', 1], ['divos', 2], ['trijos', 3], ['četros', 4],
       ['piecos', 5], ['sešos', 6], ['septiņos', 7], ['astoņos', 8],
       ['deviņos', 9], ['desmitos', 10], ['vienpadsmitos', 11], ['divpadsmitos', 12],
+      // Dativs (desmitiem, vienpadsmitiem) - "pulksten desmitiem"
+      ['vienam', 1], ['diviem', 2], ['trijiem', 3], ['četriem', 4],
+      ['pieciem', 5], ['sešiem', 6], ['septiņiem', 7], ['astoņiem', 8],
+      ['deviņiem', 9], ['desmitiem', 10], ['vienpadsmitiem', 11], ['divpadsmitiem', 12],
       // Nominatīvs (viens, divi)
       ['viens', 1], ['divi', 2], ['trīs', 3], ['četri', 4],
       ['pieci', 5], ['seši', 6], ['septiņi', 7], ['astoņi', 8],
@@ -870,10 +874,15 @@ class LatvianCalendarParserV3 {
         m = 30;
       }
       
+      // Debug logging
+      console.log(`🔍 extractTime: wordTime found - h=${h}, m=${m}, lower="${lower}"`);
+      
       // Apply PM conversion based on day-part context
       const converted = applyPMConversion(h, m, lower);
       h = converted.hour;
       m = converted.minute;
+      
+      console.log(`🔍 extractTime: after PM conversion - h=${h}, m=${m}, rolloverDay=${converted.rolloverDay}`);
       
       let startDate = this.setTime(baseDate, h, m);
       // Handle day rollover for midnight
@@ -913,6 +922,7 @@ class LatvianCalendarParserV3 {
     for (const [word, value] of this.hourWords) {
       if (lower.includes(word)) {
         h = value;
+        console.log(`🔍 extractWordTime: found hour word "${word}" = ${value} in "${lower}"`);
         break;
       }
     }
@@ -922,14 +932,15 @@ class LatvianCalendarParserV3 {
       for (const [word, value] of this.minuteWords) {
         if (lower.includes(word)) {
           m = value;
+          console.log(`🔍 extractWordTime: found minute word "${word}" = ${value} in "${lower}"`);
           break;
         }
       }
     }
     
     // Debug: log if no hour found for common cases
-    if (h === null && (lower.includes('desmitos') || lower.includes('vienpadsmitos') || lower.includes('divpadsmitos'))) {
-      console.error('❌ extractWordTime: hour word not found in lower:', lower, 'hourWords keys:', Array.from(this.hourWords.keys()).slice(0, 10));
+    if (h === null && (lower.includes('desmitos') || lower.includes('desmitiem') || lower.includes('vienpadsmitos') || lower.includes('divpadsmitos'))) {
+      console.error('❌ extractWordTime: hour word not found in lower:', lower, 'hourWords keys:', Array.from(this.hourWords.keys()).slice(0, 15));
     }
     
     return h !== null ? { h, m } : null;
@@ -1817,9 +1828,9 @@ app.post("/ingest-audio", async (req, res) => {
     while (transcriptionRetryCount <= transcriptionMaxRetries) {
       try {
         tr = await openai.audio.transcriptions.create({
-          model: "gpt-4o-mini-transcribe",
-          file
-        });
+      model: "gpt-4o-mini-transcribe",
+      file
+    });
         break; // Success
       } catch (error) {
         transcriptionRetryCount++;
@@ -1858,7 +1869,7 @@ app.post("/ingest-audio", async (req, res) => {
       const qualityThreshold = 0.6; // Lower = triggers less often (saves OpenAI calls)
       const currentScore = qualityScore(norm);
       
-    // Pārbaudām vai ir kļūdas, kas nepieciešama AI labošana
+      // Pārbaudām vai ir kļūdas, kas nepieciešama AI labošana
     // QC v2: neuzskata diakritikas/lielos burtus par kļūdu; fokusējas uz konkrētām kļūdām + zemu score
     const hasCommonErrors = ((req.header("X-Text-QC") || "").toLowerCase() === "v2")
       ? (
@@ -1884,9 +1895,9 @@ app.post("/ingest-audio", async (req, res) => {
           const analysis = await safeCreate(
             buildParams({
               model: DEFAULT_TEXT_MODEL,
-              messages: [
-                { role: "system", content: LV_COMBINED_ANALYSIS_PROMPT },
-                { role: "user", content: norm }
+            messages: [
+              { role: "system", content: LV_COMBINED_ANALYSIS_PROMPT },
+              { role: "user", content: norm }
               ],
               max: 350,
               temperature: 0
@@ -1904,15 +1915,26 @@ app.post("/ingest-audio", async (req, res) => {
     }
 
     // Laika enkuri
-    // Validate currentTime if provided
+    // Validate and normalize currentTime if provided
     let nowISO;
     if (fields.currentTime) {
-      const testDate = new Date(fields.currentTime);
+      // Normalize offset format: "+2" → "+02:00", "+02" → "+02:00", "+02:00" → "+02:00"
+      let normalizedTime = fields.currentTime;
+      const offsetMatch = normalizedTime.match(/([+-])(\d{1,2})(?::(\d{2}))?$/);
+      if (offsetMatch && !offsetMatch[3]) {
+        // Offset is missing minutes (e.g., "+2" or "+02")
+        const sign = offsetMatch[1];
+        const hours = offsetMatch[2].padStart(2, '0');
+        const minutes = '00';
+        normalizedTime = normalizedTime.replace(/([+-])(\d{1,2})(?::(\d{2}))?$/, `${sign}${hours}:${minutes}`);
+      }
+      
+      const testDate = new Date(normalizedTime);
       if (isNaN(testDate.getTime())) {
-        console.error('❌ Invalid currentTime from client, using server time. currentTime:', fields.currentTime);
+        console.error('❌ Invalid currentTime from client, using server time. currentTime:', fields.currentTime, 'normalized:', normalizedTime);
         nowISO = toRigaISO(new Date());
       } else {
-        nowISO = fields.currentTime;
+        nowISO = normalizedTime;
       }
     } else {
       nowISO = toRigaISO(new Date());
@@ -1921,7 +1943,7 @@ app.post("/ingest-audio", async (req, res) => {
     const tmr = new Date(Date.now() + 24 * 3600 * 1000);
     const tomorrowISO = fields.tomorrowExample || toRigaISO(new Date(tmr.getFullYear(), tmr.getMonth(), tmr.getDate(), 0, 0, 0));
 
-  const userMsg = `currentTime=${nowISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${analyzedText}`;
+    const userMsg = `currentTime=${nowISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${analyzedText}`;
 
   // Feature flags via headers (no app update required)
   const headerQcV2 = (req.header("X-Text-QC") || "").toLowerCase() === "v2";
@@ -1993,10 +2015,10 @@ app.post("/ingest-audio", async (req, res) => {
 
   // Ja Parser V3 neizdevās – krītam atpakaļ uz LLM
   console.log(`🤖 LLM fallback: parsing with GPT for "${analyzedText.substring(0, 50)}..."`);
-  let chat;
-  const maxRetries = 2;
-  let retryCount = 0;
-  
+    let chat;
+    const maxRetries = 2;
+    let retryCount = 0;
+    
   try {
     while (retryCount <= maxRetries) {
       try {
@@ -2005,7 +2027,7 @@ app.post("/ingest-audio", async (req, res) => {
             role: "system", 
             content: SYSTEM_PROMPT + `\n\nSVARĪGI: Atgriez TIKAI derīgu JSON objektu pēc shēmas. Nav markdown, nav \`\`\`json\`\`\`, tikai tīrs JSON ar type, lang, description, start, hasTime (vai end calendar gadījumā).\n\nTagadējais datums un laiks: ${nowISO} (Europe/Riga).`
           },
-          { role: "user", content: userMsg }
+            { role: "user", content: userMsg }
         ];
         
         // GPT-5 mini var nestrādāt ar JSON Schema, tāpēc izmantojam vienkāršu JSON mode
@@ -2084,7 +2106,7 @@ app.post("/ingest-audio", async (req, res) => {
     
     logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, score, fallbackOut);
     return res.json(fallbackOut);
-  }
+    }
 
     let out;
     try {
