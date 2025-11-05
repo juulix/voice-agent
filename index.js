@@ -862,7 +862,8 @@ class LatvianCalendarParserV3 {
       const afternoon = /pēcpusdienā|pēc pusdienas|pēcpusdien/.test(lower);
       // Check for morning/daytime day-parts (keep as AM)
       // "rīta" = "no rīta" (genitive form)
-      const morning = /no rīta|rītos|rīta|agrā rīta|agri no rīta|pusdienlaikā|pusdienās|pusdienlaiks/.test(lower);
+      // "rīt" = "tomorrow" (also typically morning context)
+      const morning = /no rīta|rītos|rīta|agrā rīta|agri no rīta|pusdienlaikā|pusdienās|pusdienlaiks|^rīt\b|\brīt\b/.test(lower);
       
       // Validate hour is in valid range
       if (hour < 0 || hour > 23) {
@@ -896,32 +897,23 @@ class LatvianCalendarParserV3 {
         return { hour: newHour, minute };
       }
       
-      // Latvian convention: if no explicit "no rīta" and hour is 1-11, assume PM (vakarā)
-      // BUT: only apply if there's explicit evening/afternoon context OR hour is 1-9 (not 10-11)
+      // IMPORTANT: Only convert to PM if there's EXPLICIT evening/afternoon context
+      // Default to AM if no explicit context (safer assumption)
       // Exception: hours 0-6 are typically AM (night/early morning)
       // Exception: hour 12 is noon (12:00), not midnight
-      // Exception: hours 10-11 without context are typically AM (10:00, 11:00)
-      if (!morning && hour >= 1 && hour <= 9) {
-        // Check if there's explicit night context
-        const isNightContext = /naktī|naktīs|agrā rīta|agri no rīta/.test(lower);
-        if (!isNightContext) {
-          // Assume PM (vakarā) for hours 1-9 without morning context
-          const newHour = hour + 12;
-          console.log(`🔍 PM conversion: no morning context, hour 1-9 - ${hour} → ${newHour} (${hour} PM)`);
-          return { hour: newHour, minute };
-        }
-      }
-      // For hours 10-11, only apply PM if there's explicit evening/afternoon context
-      if (!morning && (hour === 10 || hour === 11)) {
+      
+      // For hours 1-11, only apply PM if there's explicit evening/afternoon context
+      // No automatic PM conversion without explicit context
+      if (!morning && hour >= 1 && hour < 12) {
         const isNightContext = /naktī|naktīs|agrā rīta|agri no rīta/.test(lower);
         if ((eveningNight || afternoon) && !isNightContext) {
-          // Explicit evening/afternoon context for 10-11 → PM
+          // Explicit evening/afternoon context → PM
           const newHour = hour + 12;
-          console.log(`🔍 PM conversion: evening/afternoon context for 10-11 - ${hour} → ${newHour} (${hour} PM)`);
+          console.log(`🔍 PM conversion: explicit evening/afternoon context - ${hour} → ${newHour} (${hour} PM)`);
           return { hour: newHour, minute };
         }
-        // Otherwise, keep as AM (10:00, 11:00)
-        console.log(`🔍 PM conversion: no explicit context for 10-11, keeping hour=${hour} (AM)`);
+        // No explicit context → keep as AM (default)
+        console.log(`🔍 PM conversion: no explicit evening/afternoon context, keeping hour=${hour} (AM)`);
       }
       
       // Default: keep hour as is (AM or already 24h format)
