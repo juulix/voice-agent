@@ -771,6 +771,18 @@ class LatvianCalendarParserV3 {
         return { hour: hour + 12, minute };
       }
       
+      // Latvian convention: if no explicit "no rīta" and hour is 1-11, assume PM (vakarā)
+      // Exception: hours 0-6 are typically AM (night/early morning)
+      // Exception: hour 12 is noon (12:00), not midnight
+      if (!morning && hour >= 1 && hour <= 11) {
+        // Check if there's explicit night context
+        const isNightContext = /naktī|naktīs|agrā rīta|agri no rīta/.test(lower);
+        if (!isNightContext) {
+          // Assume PM (vakarā) for hours 1-11 without morning context
+          return { hour: hour + 12, minute };
+        }
+      }
+      
       // Default: keep hour as is (AM or already 24h format)
       return { hour, minute };
     };
@@ -917,19 +929,27 @@ class LatvianCalendarParserV3 {
 
   extractWordTime(lower) {
     let h = null, m = 0;
+    let foundHourWord = null;
     
     // Check hour words
     for (const [word, value] of this.hourWords) {
       if (lower.includes(word)) {
         h = value;
+        foundHourWord = word;
         console.log(`🔍 extractWordTime: found hour word "${word}" = ${value} in "${lower}"`);
         break;
       }
     }
     
     // Check minute words (only if hour found)
+    // BUT: ignore minute words that are part of the hour word (e.g., "desmit" in "desmitos")
     if (h !== null) {
       for (const [word, value] of this.minuteWords) {
+        // Skip if this minute word is contained in the hour word (e.g., "desmit" in "desmitos")
+        if (foundHourWord && foundHourWord.includes(word)) {
+          console.log(`🔍 extractWordTime: skipping minute word "${word}" (part of hour word "${foundHourWord}")`);
+          continue;
+        }
         if (lower.includes(word)) {
           m = value;
           console.log(`🔍 extractWordTime: found minute word "${word}" = ${value} in "${lower}"`);
@@ -1920,13 +1940,15 @@ app.post("/ingest-audio", async (req, res) => {
     if (fields.currentTime) {
       // Normalize offset format: "+2" → "+02:00", "+02" → "+02:00", "+02:00" → "+02:00"
       let normalizedTime = fields.currentTime;
-      const offsetMatch = normalizedTime.match(/([+-])(\d{1,2})(?::(\d{2}))?$/);
+      // Better regex: match offset at end of string (before any trailing spaces)
+      const offsetMatch = normalizedTime.match(/([+-])(\d{1,2})(?::(\d{2}))?(?:\s*)$/);
       if (offsetMatch && !offsetMatch[3]) {
         // Offset is missing minutes (e.g., "+2" or "+02")
         const sign = offsetMatch[1];
         const hours = offsetMatch[2].padStart(2, '0');
         const minutes = '00';
-        normalizedTime = normalizedTime.replace(/([+-])(\d{1,2})(?::(\d{2}))?$/, `${sign}${hours}:${minutes}`);
+        // Replace the offset part
+        normalizedTime = normalizedTime.replace(/([+-])(\d{1,2})(?:\s*)$/, `${sign}${hours}:${minutes}`);
       }
       
       const testDate = new Date(normalizedTime);
@@ -1970,8 +1992,39 @@ app.post("/ingest-audio", async (req, res) => {
   // Parser V3 vienmēr ieslēgts visiem lietotājiem
   console.log(`🧭 Parser v3 attempting parse: "${analyzedText}"`);
   const parsed = parseWithV3(analyzedText, nowISO, langHint);
-  // Ja Parser v3 atgriež objektu ar pietiekamu confidence (≥0.8), izmanto to bez LLM
-  if (parsed && parsed.confidence >= 0.8) {
+  
+  // Validate Parser V3 result - check if time makes sense
+  let shouldUseParser = parsed && parsed.confidence >= 0.8;
+  if (shouldUseParser && parsed.start) {
+    try {
+      const startDate = new Date(parsed.start);
+      if (isNaN(startDate.getTime())) {
+        console.warn(`⚠️ Parser V3 returned invalid start date: ${parsed.start}, falling back to LLM`);
+        shouldUseParser = false;
+      } else {
+        // Check if time is reasonable (not in past for "today" or "rīt", not too far in future)
+        const now = new Date(nowISO);
+        const hoursDiff = (startDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+        
+        // If time is more than 7 days in past, it's likely wrong
+        if (hoursDiff < -168) {
+          console.warn(`⚠️ Parser V3 returned time ${hoursDiff.toFixed(1)} hours in past: ${parsed.start}, falling back to LLM`);
+          shouldUseParser = false;
+        }
+        // If time is more than 1 year in future, it's likely wrong
+        else if (hoursDiff > 8760) {
+          console.warn(`⚠️ Parser V3 returned time ${hoursDiff.toFixed(1)} hours in future: ${parsed.start}, falling back to LLM`);
+          shouldUseParser = false;
+        }
+      }
+    } catch (e) {
+      console.warn(`⚠️ Parser V3 validation error: ${e.message}, falling back to LLM`);
+      shouldUseParser = false;
+    }
+  }
+  
+  // Ja Parser v3 atgriež objektu ar pietiekamu confidence (≥0.8) UN validācija iziet, izmanto to bez LLM
+  if (shouldUseParser) {
     console.log(`🧭 Parser v3 used (confidence: ${parsed.confidence}): type=${parsed.type}, start=${parsed.start}, end=${parsed.end || 'none'}`);
     parsed.raw_transcript = raw;
     parsed.normalized_transcript = norm;
