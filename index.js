@@ -2,6 +2,7 @@ import express from "express";
 import Busboy from "busboy";
 import OpenAI from "openai";
 import { toFile } from "openai/uploads";
+import Anthropic from "@anthropic-ai/sdk";
 import client from "prom-client";
 import sqlite3 from "sqlite3";
 import path from "path";
@@ -12,6 +13,10 @@ const PORT = process.env.PORT || 3000;
 const APP_BEARER_TOKEN = process.env.APP_BEARER_TOKEN || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
+
+// Claude/Teacher configuration
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || process.env.ECHOTIME_ONBOARDING_API_KEY;
+const anthropic = ANTHROPIC_API_KEY ? new Anthropic({ apiKey: ANTHROPIC_API_KEY }) : null;
 
 // Initialize Sentry
 if (process.env.SENTRY_DSN) {
@@ -36,6 +41,14 @@ const FIXED_TEMP_MODELS = new Set([
 // Noklusētie modeļi (vieglāk mainīt vienuviet)
 const DEFAULT_TEXT_MODEL = "gpt-4.1-mini";   // galvenajām operācijām
 const CHEAP_TASK_MODEL  = "gpt-4.1-mini";    // kopsavilkumi/klasifikācija u.tml.
+
+// Teacher-Student Learning Mode Configuration
+const LEARNING_MODE = process.env.LEARNING_MODE === 'on';
+const TEACHER_MODEL = process.env.TEACHER_MODEL || 'claude-sonnet-4-20250514'; // Claude Sonnet 4.5
+const TEACHER_RATE = parseFloat(process.env.TEACHER_RATE || '0.3'); // Max 30% of requests
+const CONFIDENCE_THRESHOLD_HIGH = parseFloat(process.env.CONFIDENCE_THRESHOLD_HIGH || '0.8');
+const CONFIDENCE_THRESHOLD_LOW = parseFloat(process.env.CONFIDENCE_THRESHOLD_LOW || '0.5');
+const STRICT_TRIGGERS = (process.env.STRICT_TRIGGERS || 'am_pm,interval,relative_multi').split(',').map(s => s.trim());
 
 /**
  * Build OpenAI API parameters with automatic temperature and token handling
@@ -165,6 +178,30 @@ db.serialize(() => {
   db.run(`CREATE INDEX IF NOT EXISTS idx_user_day ON quota_usage(user_id, day_key)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_user_month ON quota_usage(user_id, month_key)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_month_key ON quota_usage(month_key)`);
+  
+  // Teacher-Student Learning: Gold log table
+  db.run(`CREATE TABLE IF NOT EXISTS v3_gold_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts DATETIME DEFAULT CURRENT_TIMESTAMP,
+    user_id TEXT,
+    session_id TEXT,
+    asr_text TEXT,
+    normalized_text TEXT,
+    v3_result TEXT NOT NULL,
+    teacher_result TEXT,
+    decision TEXT NOT NULL,
+    discrepancies TEXT,
+    used_triggers TEXT,
+    latency_ms TEXT,
+    severity TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+  
+  // Indexes for gold log
+  db.run(`CREATE INDEX IF NOT EXISTS idx_gold_ts ON v3_gold_log(ts)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_gold_user ON v3_gold_log(user_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_gold_severity ON v3_gold_log(severity)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_gold_decision ON v3_gold_log(decision)`);
   
   console.log('✅ Database optimized and indexes created');
 });
@@ -1515,6 +1552,194 @@ const parserV3 = new LatvianCalendarParserV3();
  * @param {string} langHint - Language hint (default: 'lv')
  * @returns {Object|null} Parsed result
  */
+/* ===== Teacher-Student Learning Functions ===== */
+
+/**
+ * Parse with Teacher (Claude) - Gold standard parser
+ */
+async function parseWithTeacher(text, nowISO, langHint = 'lv') {
+  if (!anthropic) {
+    throw new Error('Anthropic API key not configured');
+  }
+  
+  const tmr = new Date(Date.now() + 24 * 3600 * 1000);
+  const tomorrowISO = toRigaISO(new Date(tmr.getFullYear(), tmr.getMonth(), tmr.getDate(), 0, 0, 0));
+  
+  const teacherPrompt = SYSTEM_PROMPT + `\n\nSVARĒGI: Atgriez TIKAI derīgu JSON objektu pēc shēmas. Nav markdown, nav \`\`\`json\`\`\`, tikai tīrs JSON ar type, lang, description, start, hasTime (vai end calendar gadījumā).\n\nTagadējais datums un laiks: ${nowISO} (Europe/Riga).\nRītdienas datums: ${tomorrowISO}`;
+  
+  try {
+    const response = await anthropic.messages.create({
+      model: TEACHER_MODEL,
+      max_tokens: 1024,
+      temperature: 0,
+      messages: [
+        {
+          role: "user",
+          content: `currentTime=${nowISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${text}`
+        }
+      ],
+      system: teacherPrompt
+    });
+    
+    const content = response.content[0].text || '{}';
+    const parsed = JSON.parse(content);
+    
+    // Validate
+    if (!isValidCalendarJson(parsed)) {
+      throw new Error('Teacher returned invalid JSON');
+    }
+    
+    return parsed;
+  } catch (error) {
+    console.error('❌ Teacher parsing failed:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Detect triggers that require Teacher validation
+ */
+function detectTriggers(text, lower) {
+  const triggers = [];
+  
+  // AM/PM trigger
+  if (STRICT_TRIGGERS.includes('am_pm')) {
+    const amPmPattern = /\b(vienā|divos|trijos|četros|piecos|sešos|septiņos|astoņos|deviņos|desmitos|vienpadsmitos)\b.*\b(vakarā|vēlu|naktī|pēcpusdienā|no rīta|rītos)\b/gi;
+    if (amPmPattern.test(lower)) {
+      triggers.push('am_pm');
+    }
+  }
+  
+  // Interval trigger
+  if (STRICT_TRIGGERS.includes('interval')) {
+    if (/no\s+(\d+|vienam|diviem|trijiem|četriem|pieciem|sešiem|septiņiem|astoņiem|deviņiem|desmitiem|vienpadsmitiem|divpadsmitiem)\s+līdz\s+(\d+|vienam|diviem|trijiem|četriem|pieciem|sešiem|septiņiem|astoņiem|deviņiem|desmitiem|vienpadsmitiem|divpadsmitiem)/gi.test(lower)) {
+      triggers.push('interval');
+    }
+  }
+  
+  // Relative multi trigger
+  if (STRICT_TRIGGERS.includes('relative_multi')) {
+    const relativePattern = /\b(pēc\s+(\d+|vienas?|divām|trim|četrām|piecām)\s+(stundām|minūtēm|stundas|minūtes))\b.*\b(rīt|parīt|šodien|trešdien|piektdien)\b/gi;
+    if (relativePattern.test(lower)) {
+      triggers.push('relative_multi');
+    }
+  }
+  
+  return triggers;
+}
+
+/**
+ * Compare V3 and Teacher results
+ */
+function compareResults(v3Result, teacherResult) {
+  const discrepancies = {
+    time: false,
+    date: false,
+    place: false,
+    severity: 'low',
+    tags: []
+  };
+  
+  // Compare time
+  if (v3Result.start && teacherResult.start) {
+    const v3Date = new Date(v3Result.start);
+    const teacherDate = new Date(teacherResult.start);
+    const hoursDiff = Math.abs((v3Date.getTime() - teacherDate.getTime()) / (1000 * 60 * 60));
+    
+    if (hoursDiff >= 2) {
+      discrepancies.time = true;
+      discrepancies.severity = 'high';
+      discrepancies.tags.push('time_large_diff');
+    } else if (hoursDiff >= 1) {
+      discrepancies.time = true;
+      discrepancies.severity = 'mid';
+      discrepancies.tags.push('time_medium_diff');
+    } else if (hoursDiff > 0) {
+      discrepancies.time = true;
+      discrepancies.severity = 'low';
+      discrepancies.tags.push('time_small_diff');
+    }
+    
+    // Check AM/PM issue (12 hour difference)
+    if (Math.abs(hoursDiff - 12) < 0.5) {
+      discrepancies.tags.push('am_pm');
+      discrepancies.severity = 'high';
+    }
+  }
+  
+  // Compare date
+  if (v3Result.start && teacherResult.start) {
+    const v3Date = new Date(v3Result.start);
+    const teacherDate = new Date(teacherResult.start);
+    const daysDiff = Math.abs((v3Date.getTime() - teacherDate.getTime()) / (1000 * 60 * 60 * 24));
+    
+    if (daysDiff >= 1) {
+      discrepancies.date = true;
+      discrepancies.severity = 'high';
+      discrepancies.tags.push('date_large_diff');
+    } else if (daysDiff > 0) {
+      discrepancies.date = true;
+      if (discrepancies.severity === 'low') discrepancies.severity = 'mid';
+      discrepancies.tags.push('date_diff');
+    }
+  }
+  
+  // Compare description for place names (simple heuristic)
+  const v3Desc = (v3Result.description || '').toLowerCase();
+  const teacherDesc = (teacherResult.description || '').toLowerCase();
+  
+  // Extract location-like words (pie, ar, uz, etc.)
+  const locationPattern = /\b(pie|ar|uz|dārznīcībā|veikalā|baznīcā|skolā|darbs|darbā)\b/gi;
+  const v3Locations = (v3Desc.match(locationPattern) || []).sort().join(',');
+  const teacherLocations = (teacherDesc.match(locationPattern) || []).sort().join(',');
+  
+  if (v3Locations !== teacherLocations && (v3Locations || teacherLocations)) {
+    discrepancies.place = true;
+    if (discrepancies.severity === 'low') discrepancies.severity = 'mid';
+    discrepancies.tags.push('place_diff');
+  }
+  
+  return {
+    hasDiscrepancy: discrepancies.time || discrepancies.date || discrepancies.place,
+    discrepancies
+  };
+}
+
+/**
+ * Save gold log entry to database
+ */
+function saveGoldLog(entry) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `INSERT INTO v3_gold_log 
+       (ts, user_id, session_id, asr_text, normalized_text, v3_result, teacher_result, decision, discrepancies, used_triggers, latency_ms, severity)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        entry.ts || new Date().toISOString(),
+        entry.user_id || null,
+        entry.session_id || null,
+        entry.asr_text || null,
+        entry.normalized_text || null,
+        JSON.stringify(entry.v3_result),
+        entry.teacher_result ? JSON.stringify(entry.teacher_result) : null,
+        entry.decision,
+        JSON.stringify(entry.discrepancies || {}),
+        JSON.stringify(entry.used_triggers || []),
+        JSON.stringify(entry.latency_ms || {}),
+        entry.discrepancies?.severity || 'low'
+      ],
+      function(err) {
+        if (err) {
+          console.error('❌ Failed to save gold log:', err);
+          reject(err);
+        } else {
+          resolve(this.lastID);
+        }
+      }
+    );
+  });
+}
+
 function parseWithV3(text, nowISO, langHint = 'lv') {
   try {
     const result = parserV3.parse(text, nowISO, langHint);
@@ -2377,9 +2602,12 @@ app.post("/ingest-audio", async (req, res) => {
   }
 
   // Parser V3 vienmēr ieslēgts visiem lietotājiem
+  const processingStart = Date.now();
   console.log(`🧭 Parser v3 attempting parse: "${analyzedText}"`);
   console.log(`📅 nowISO being used: ${nowISO} (from ${fields.currentTime ? 'client' : 'server'})`);
+  const v3StartTime = Date.now();
   const parsed = parseWithV3(analyzedText, nowISO, langHint);
+  const v3Latency = Date.now() - v3StartTime;
   
   // Validate Parser V3 result - check if time makes sense
   let shouldUseParser = parsed && parsed.confidence >= 0.8;
@@ -2411,12 +2639,125 @@ app.post("/ingest-audio", async (req, res) => {
     }
   }
   
+  // Teacher-Student Learning Mode: Paralēlā parsēšana un salīdzināšana
+  let teacherResult = null;
+  let comparison = null;
+  let decision = 'v3';
+  const latencyMs = { v3: v3Latency, teacher: 0, total: 0 };
+  
+  // Detect triggers
+  const lower = analyzedText.toLowerCase();
+  const usedTriggers = detectTriggers(analyzedText, lower);
+  
+  // Determine if we need Teacher
+  const needsTeacher = LEARNING_MODE && anthropic && (
+    // Strict triggers always require Teacher
+    usedTriggers.length > 0 ||
+    // Low confidence requires Teacher
+    !parsed || !parsed.confidence || parsed.confidence < CONFIDENCE_THRESHOLD_LOW ||
+    // Medium confidence (0.50-0.79) requires validation
+    (parsed && parsed.confidence >= CONFIDENCE_THRESHOLD_LOW && parsed.confidence < CONFIDENCE_THRESHOLD_HIGH) ||
+    // Sample rate for high confidence (0.8+)
+    (parsed && parsed.confidence >= CONFIDENCE_THRESHOLD_HIGH && Math.random() < TEACHER_RATE)
+  );
+  
   // Ja Parser v3 atgriež objektu ar pietiekamu confidence (≥0.8) UN validācija iziet, izmanto to bez LLM
   if (shouldUseParser) {
+    
     console.log(`🧭 Parser v3 used (confidence: ${parsed.confidence}): type=${parsed.type}, start=${parsed.start}, end=${parsed.end || 'none'}`);
     
+    // Teacher-Student: Paralēlā parsēšana (ja nepieciešams)
+    if (needsTeacher) {
+      const teacherStart = Date.now();
+      try {
+        console.log(`👨‍🏫 Teacher parsing (triggers: ${usedTriggers.join(', ') || 'sampling'})...`);
+        teacherResult = await parseWithTeacher(analyzedText, nowISO, langHint);
+        latencyMs.teacher = Date.now() - teacherStart;
+        
+        // Compare results
+        comparison = compareResults(parsed, teacherResult);
+        
+        // Decision logic
+        if (usedTriggers.length > 0 || parsed.confidence < CONFIDENCE_THRESHOLD_LOW) {
+          // Strict triggers or low confidence → Teacher primary
+          decision = 'teacher_primary';
+          console.log(`👨‍🏫 Teacher primary (triggers: ${usedTriggers.join(', ')}, confidence: ${parsed.confidence})`);
+        } else if (parsed.confidence >= CONFIDENCE_THRESHOLD_LOW && parsed.confidence < CONFIDENCE_THRESHOLD_HIGH) {
+          // Medium confidence → Teacher validate
+          if (comparison.hasDiscrepancy && comparison.discrepancies.severity !== 'low') {
+            decision = 'teacher_validate';
+            console.log(`👨‍🏫 Teacher validate (discrepancy detected, severity: ${comparison.discrepancies.severity})`);
+          } else {
+            decision = 'v3';
+            console.log(`🧭 V3 kept (no significant discrepancy)`);
+          }
+        } else {
+          // High confidence → sample, keep V3 unless major discrepancy
+          if (comparison.hasDiscrepancy && comparison.discrepancies.severity === 'high') {
+            decision = 'teacher_validate';
+            console.log(`👨‍🏫 Teacher validate (high severity discrepancy)`);
+          } else {
+            decision = 'v3';
+          }
+        }
+        
+        // Save gold log
+        try {
+          await saveGoldLog({
+            ts: new Date().toISOString(),
+            user_id: userId,
+            session_id: req.requestId,
+            asr_text: raw,
+            normalized_text: norm,
+            v3_result: parsed,
+            teacher_result: teacherResult,
+            decision: decision,
+            discrepancies: comparison.discrepancies,
+            used_triggers: usedTriggers,
+            latency_ms: latencyMs
+          });
+          console.log(`📊 Gold log saved (decision: ${decision})`);
+        } catch (logError) {
+          console.warn(`⚠️ Failed to save gold log: ${logError.message}`);
+        }
+      } catch (teacherError) {
+        console.warn(`⚠️ Teacher parsing failed: ${teacherError.message}, using V3`);
+        latencyMs.teacher = Date.now() - teacherStart;
+        decision = 'v3';
+        // Still save gold log with V3 only
+        try {
+          await saveGoldLog({
+            ts: new Date().toISOString(),
+            user_id: userId,
+            session_id: req.requestId,
+            asr_text: raw,
+            normalized_text: norm,
+            v3_result: parsed,
+            teacher_result: null,
+            decision: 'v3',
+            discrepancies: null,
+            used_triggers: usedTriggers,
+            latency_ms: latencyMs
+          });
+        } catch (logError) {
+          // Ignore log errors
+        }
+      }
+    }
+    
+    // Use Teacher result if decision requires it
+    let finalResult = parsed;
+    if (decision === 'teacher_primary' || decision === 'teacher_validate') {
+      if (teacherResult) {
+        finalResult = teacherResult;
+        console.log(`✅ Using Teacher result (${decision})`);
+      } else {
+        console.warn(`⚠️ Teacher result unavailable, using V3`);
+      }
+    }
+    
     // GPT pārbaude teksta kvalitātei - ar feature flag sistēmu
-    let finalDescription = parsed.description;
+    let finalDescription = finalResult.description;
     const descriptionBefore = finalDescription;
     
     // Feature flags: DESC_GPT_ENABLED (default: off for testing) and DESC_GPT_MODE (off|conservative|aggressive)
@@ -2528,17 +2869,30 @@ Atgriez TIKAI uzlaboto tekstu, bez skaidrojumiem.`;
       console.log(`📝 Semantic tags kept:`, semanticTagsKept);
     }
     
-    parsed.description = finalDescription;
-    parsed.description_before = descriptionBefore; // For monitoring
-    parsed.desc_gpt_used = shouldUseGpt; // For monitoring
-    parsed.desc_gpt_mode = descGptMode; // For monitoring
-    parsed.raw_transcript = raw;
-    parsed.normalized_transcript = norm;
-    parsed.analyzed_transcript = analyzedText;
-    parsed.analysis_applied = needsAnalysis;
-    parsed.confidence = score;
-    if (parsed.type === 'shopping' && shoppingStyleList) {
-      parsed.description = parsed.description || 'Pirkumu saraksts';
+    finalResult.description = finalDescription;
+    finalResult.description_before = descriptionBefore; // For monitoring
+    finalResult.desc_gpt_used = shouldUseGpt; // For monitoring
+    finalResult.desc_gpt_mode = descGptMode; // For monitoring
+    finalResult.raw_transcript = raw;
+    finalResult.normalized_transcript = norm;
+    finalResult.analyzed_transcript = analyzedText;
+    finalResult.analysis_applied = needsAnalysis;
+    finalResult.confidence = score;
+    
+    // Teacher-Student metadata
+    if (LEARNING_MODE) {
+      finalResult.learning_mode = {
+        decision: decision,
+        v3_confidence: parsed.confidence,
+        teacher_used: teacherResult !== null,
+        has_discrepancy: comparison?.hasDiscrepancy || false,
+        discrepancy_severity: comparison?.discrepancies?.severity || null,
+        triggers: usedTriggers,
+        latency_ms: latencyMs
+      };
+    }
+    if (finalResult.type === 'shopping' && shoppingStyleList) {
+      finalResult.description = finalResult.description || 'Pirkumu saraksts';
     }
     // Kvotu skaitīšana un atbilde kā zemāk (kopējam no success ceļa)
     u.daily.used += 1;
@@ -2547,7 +2901,7 @@ Atgriez TIKAI uzlaboto tekstu, bez skaidrojumiem.`;
     databaseOperations.inc({ operation: "update", table: "quota_usage" }, 1);
     quotaUsage.inc({ plan: limits.plan, type: "daily" }, 1);
     if (limits.plan === "pro") { quotaUsage.inc({ plan: limits.plan, type: "monthly" }, 1); }
-    parsed.quota = {
+    finalResult.quota = {
       plan: limits.plan,
       dailyLimit: normalizeDaily(limits.dailyLimit),
       dailyUsed: u.daily.used,
@@ -2556,20 +2910,94 @@ Atgriez TIKAI uzlaboto tekstu, bez skaidrojumiem.`;
       dailyGraceUsed: u.daily.graceUsed
     };
     if (limits.plan === 'pro') {
-      parsed.quota.monthlyLimit = limits.monthlyLimit;
-      parsed.quota.monthlyUsed = u.monthly.used;
-      parsed.quota.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
+      finalResult.quota.monthlyLimit = limits.monthlyLimit;
+      finalResult.quota.monthlyUsed = u.monthly.used;
+      finalResult.quota.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
     }
-    parsed.requestId = req.requestId;
-    const processingTime = Date.now() - processingStart;
-    audioProcessingTime.observe({ status: "success" }, processingTime);
+    finalResult.requestId = req.requestId;
+    latencyMs.total = Date.now() - processingStart;
+    audioProcessingTime.observe({ status: "success" }, latencyMs.total);
     
     // Log transcript flow
-    logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, score, parsed);
+    logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, score, finalResult);
     
-    return res.json(parsed);
+    return res.json(finalResult);
   } else {
+    // V3 confidence < 0.8 or validation failed
     console.log(`🧭 Parser v3 returned ${parsed ? `low confidence (${parsed.confidence || 0})` : 'null'}, falling back to LLM`);
+    
+    // Teacher-Student: If LEARNING_MODE is on and V3 has medium confidence, try Teacher first
+    if (LEARNING_MODE && anthropic && parsed && parsed.confidence >= CONFIDENCE_THRESHOLD_LOW) {
+      const teacherStart = Date.now();
+      try {
+        console.log(`👨‍🏫 Teacher parsing (V3 confidence ${parsed.confidence} < 0.8)...`);
+        teacherResult = await parseWithTeacher(analyzedText, nowISO, langHint);
+        latencyMs.teacher = Date.now() - teacherStart;
+        
+        // Compare and use Teacher
+        comparison = compareResults(parsed, teacherResult);
+        decision = 'teacher_primary';
+        
+        // Save gold log
+        try {
+          await saveGoldLog({
+            ts: new Date().toISOString(),
+            user_id: userId,
+            session_id: req.requestId,
+            asr_text: raw,
+            normalized_text: norm,
+            v3_result: parsed,
+            teacher_result: teacherResult,
+            decision: decision,
+            discrepancies: comparison.discrepancies,
+            used_triggers: usedTriggers,
+            latency_ms: latencyMs
+          });
+        } catch (logError) {
+          // Ignore
+        }
+        
+        // Use Teacher result
+        const finalResult = teacherResult;
+        finalResult.raw_transcript = raw;
+        finalResult.normalized_transcript = norm;
+        finalResult.analyzed_transcript = analyzedText;
+        finalResult.analysis_applied = needsAnalysis;
+        finalResult.confidence = score;
+        finalResult.learning_mode = {
+          decision: decision,
+          v3_confidence: parsed.confidence,
+          teacher_used: true,
+          has_discrepancy: comparison.hasDiscrepancy,
+          discrepancy_severity: comparison.discrepancies.severity,
+          triggers: usedTriggers,
+          latency_ms: latencyMs
+        };
+        finalResult.quota = {
+          plan: limits.plan,
+          dailyLimit: normalizeDaily(limits.dailyLimit),
+          dailyUsed: u.daily.used + 1,
+          dailyRemaining: limits.dailyLimit >= 999999 ? null : Math.max(0, limits.dailyLimit - u.daily.used - 1),
+          dailyGraceLimit: GRACE_DAILY,
+          dailyGraceUsed: u.daily.graceUsed
+        };
+        if (limits.plan === 'pro') {
+          finalResult.quota.monthlyLimit = limits.monthlyLimit;
+          finalResult.quota.monthlyUsed = u.monthly.used + 1;
+          finalResult.quota.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used - 1);
+        }
+        finalResult.requestId = req.requestId;
+        u.daily.used += 1;
+        await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
+        latencyMs.total = Date.now() - processingStart;
+        audioProcessingTime.observe({ status: "success" }, latencyMs.total);
+        logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, score, finalResult);
+        return res.json(finalResult);
+      } catch (teacherError) {
+        console.warn(`⚠️ Teacher parsing failed: ${teacherError.message}, falling back to LLM`);
+        // Continue to LLM fallback
+      }
+    }
   }
 
   // Ja Parser V3 neizdevās – krītam atpakaļ uz LLM
