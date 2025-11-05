@@ -619,6 +619,18 @@ class LatvianCalendarParserV3 {
         const date = new Date(now);
         date.setDate(date.getDate() + offset);
         date.setHours(0, 0, 0, 0);
+        
+        // Validate date
+        if (isNaN(date.getTime())) {
+          console.error('❌ extractDate: invalid date after offset, word:', word, 'offset:', offset, 'now:', now);
+          return { 
+            baseDate: new Date(now), 
+            type: 'relative', 
+            offset: 0,
+            isToday: true
+          };
+        }
+        
         return { 
           baseDate: date, 
           type: 'relative', 
@@ -909,6 +921,11 @@ class LatvianCalendarParserV3 {
       }
     }
     
+    // Debug: log if no hour found for common cases
+    if (h === null && (lower.includes('desmitos') || lower.includes('vienpadsmitos') || lower.includes('divpadsmitos'))) {
+      console.error('❌ extractWordTime: hour word not found in lower:', lower, 'hourWords keys:', Array.from(this.hourWords.keys()).slice(0, 10));
+    }
+    
     return h !== null ? { h, m } : null;
   }
 
@@ -936,8 +953,21 @@ class LatvianCalendarParserV3 {
   }
 
   setTime(baseDate, hour, minute) {
+    // Validate baseDate
+    if (!baseDate || !(baseDate instanceof Date) || isNaN(baseDate.getTime())) {
+      console.error('❌ setTime: invalid baseDate, using now');
+      baseDate = new Date();
+    }
+    
     const date = new Date(baseDate);
     date.setHours(hour, minute, 0, 0);
+    
+    // Validate result
+    if (isNaN(date.getTime())) {
+      console.error('❌ setTime: invalid result date, hour:', hour, 'minute:', minute, 'baseDate:', baseDate);
+      return new Date(); // Fallback to now
+    }
+    
     return date;
   }
 
