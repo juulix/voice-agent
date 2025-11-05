@@ -517,7 +517,13 @@ class LatvianCalendarParserV3 {
     try {
       if (!text || typeof text !== 'string') return null;
       
-      const now = new Date(nowISO);
+      // Validate and parse nowISO
+      let now = new Date(nowISO);
+      if (isNaN(now.getTime())) {
+        console.error('❌ parse: invalid nowISO, using current time. nowISO:', nowISO);
+        now = new Date();
+      }
+      
       const normalized = this.normalize(text);
       const lower = normalized.toLowerCase();
 
@@ -1898,7 +1904,20 @@ app.post("/ingest-audio", async (req, res) => {
     }
 
     // Laika enkuri
-    const nowISO = fields.currentTime || toRigaISO(new Date());
+    // Validate currentTime if provided
+    let nowISO;
+    if (fields.currentTime) {
+      const testDate = new Date(fields.currentTime);
+      if (isNaN(testDate.getTime())) {
+        console.error('❌ Invalid currentTime from client, using server time. currentTime:', fields.currentTime);
+        nowISO = toRigaISO(new Date());
+      } else {
+        nowISO = fields.currentTime;
+      }
+    } else {
+      nowISO = toRigaISO(new Date());
+    }
+    
     const tmr = new Date(Date.now() + 24 * 3600 * 1000);
     const tomorrowISO = fields.tomorrowExample || toRigaISO(new Date(tmr.getFullYear(), tmr.getMonth(), tmr.getDate(), 0, 0, 0));
 
