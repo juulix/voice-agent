@@ -18,8 +18,9 @@ if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1);
 // Meklē API key dažādos environment variable nosaukumos (Railway var būt ar domuzīmēm vai citādāk)
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY 
   || process.env.ECHOTIME_ONBOARDING_API_KEY 
-  || process.env['ECHOTIME-ONBOARDING-API-KEY'] // Railway var būt ar domuzīmēm
-  || process.env.echotime_onboarding_api_key; // lowercase
+  || process.env['ECHOTIME-ONBOARDING-API-KEY'] // Railway ar domuzīmēm (uppercase)
+  || process.env['echotime-onboarding-api-key'] // Railway ar domuzīmēm (lowercase) ← Railway standarts
+  || process.env.echotime_onboarding_api_key; // lowercase underscore
 const anthropic = ANTHROPIC_API_KEY ? new Anthropic({ apiKey: ANTHROPIC_API_KEY }) : null;
 
 // Initialize Sentry
@@ -62,6 +63,7 @@ let keySource = 'none';
 if (process.env.ANTHROPIC_API_KEY) keySource = 'ANTHROPIC_API_KEY';
 else if (process.env.ECHOTIME_ONBOARDING_API_KEY) keySource = 'ECHOTIME_ONBOARDING_API_KEY';
 else if (process.env['ECHOTIME-ONBOARDING-API-KEY']) keySource = 'ECHOTIME-ONBOARDING-API-KEY';
+else if (process.env['echotime-onboarding-api-key']) keySource = 'echotime-onboarding-api-key'; // Railway standarts
 else if (process.env.echotime_onboarding_api_key) keySource = 'echotime_onboarding_api_key';
 
 // Debug: rādīt visus environment variables, kas satur "anthropic" vai "onboarding"
