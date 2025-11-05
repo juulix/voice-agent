@@ -813,18 +813,41 @@ class LatvianCalendarParserV3 {
     const relMinMatch = lower.match(/pēc\s+(\d+)\s*min/);
     const relHourMatch = lower.match(/pēc\s+(\d+)\s*stund/);
     const relWordMatch = lower.match(/pēc\s+(pusotras|stundas|pusstundas)/);
+    // Word-based minutes: "pēc desmit minūtēm", "pēc divdesmit minūtēm"
+    const relMinWordMatch = lower.match(/pēc\s+(pieci|desmit|piecpadsmit|divdesmit|divdesmit\s+pieci|trīsdesmit|četrdesmit|piecdesmit)\s*min/);
+    // Word-based hours: "pēc divām stundām", "pēc trim stundām"
+    const relHourWordMatch = lower.match(/pēc\s+(vienas?|divām|trim|četrām|piecām)\s*stund/);
 
-    if (relMinMatch || relHourMatch || relWordMatch) {
+    if (relMinMatch || relHourMatch || relWordMatch || relMinWordMatch || relHourWordMatch) {
       let offsetMs = 0;
 
       if (relMinMatch) {
         const mins = parseInt(relMinMatch[1], 10);
         offsetMs = mins * 60 * 1000;
-        console.log(`🔍 extractTime: dynamic relative time - +${mins} minutes`);
+        console.log(`🔍 extractTime: dynamic relative time - +${mins} minutes (numeric)`);
+      } else if (relMinWordMatch) {
+        // Convert word to number
+        const word = relMinWordMatch[1].replace(/\s+/g, ' '); // normalize spaces
+        const minuteMap = {
+          'pieci': 5, 'desmit': 10, 'piecpadsmit': 15, 'divdesmit': 20,
+          'divdesmit pieci': 25, 'trīsdesmit': 30, 'četrdesmit': 40, 'piecdesmit': 50
+        };
+        const mins = minuteMap[word] || 10;
+        offsetMs = mins * 60 * 1000;
+        console.log(`🔍 extractTime: dynamic relative time - "${word}" = +${mins} minutes (word)`);
       } else if (relHourMatch) {
         const hours = parseInt(relHourMatch[1], 10);
         offsetMs = hours * 60 * 60 * 1000;
-        console.log(`🔍 extractTime: dynamic relative time - +${hours} hours`);
+        console.log(`🔍 extractTime: dynamic relative time - +${hours} hours (numeric)`);
+      } else if (relHourWordMatch) {
+        // Convert word to number
+        const word = relHourWordMatch[1];
+        const hourMap = {
+          'vienas': 1, 'viena': 1, 'divām': 2, 'trim': 3, 'četrām': 4, 'piecām': 5
+        };
+        const hours = hourMap[word] || 1;
+        offsetMs = hours * 60 * 60 * 1000;
+        console.log(`🔍 extractTime: dynamic relative time - "${word}" = +${hours} hours (word)`);
       } else if (relWordMatch) {
         const word = relWordMatch[1];
         const mins = word === 'pusstundas' ? 30 : word === 'pusotras' ? 90 : 60;
@@ -1024,13 +1047,22 @@ class LatvianCalendarParserV3 {
     let foundHourWord = null;
     
     // Check hour words - but skip if followed by "minūtēm" (e.g., "desmit minūtēm" = minutes, not hours)
+    // EXCEPTION: if preceded by "pēc" (e.g., "pēc desmit minūtēm"), don't skip - it's relative time
     for (const [word, value] of this.hourWords) {
       if (lower.includes(word)) {
         // Check if this word is part of "X minūtēm" pattern (minutes, not hours)
         const wordIndex = lower.indexOf(word);
         const afterWord = lower.substring(wordIndex + word.length);
-        // If "minūtēm" or "minūtēs" appears right after this word (with optional spaces), skip it
+        const beforeWord = lower.substring(0, wordIndex);
+
+        // If "minūtēm" appears after word AND "pēc" is NOT before it, skip it
         if (/^\s*minūt(ēm|ēs|u)/.test(afterWord)) {
+          // Check if "pēc" precedes this pattern (relative time)
+          if (/pēc\s*$/.test(beforeWord)) {
+            // This is "pēc X minūtēm" - don't skip, let relative time handler deal with it
+            console.log(`🔍 extractWordTime: found "pēc ${word} minūtēm" - skipping (relative time pattern)`);
+            continue;
+          }
           console.log(`🔍 extractWordTime: skipping hour word "${word}" (part of "X minūtēm" pattern)`);
           continue;
         }
