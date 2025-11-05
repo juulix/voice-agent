@@ -356,8 +356,17 @@ function toRigaISO(d) {
   });
   const partsArr = dtf.formatToParts(d);
   const parts = Object.fromEntries(partsArr.map(p => [p.type, p.value]));
-  // parts.timeZoneName like "GMT+02:00" → extract "+02:00"
-  const offset = (parts.timeZoneName || "GMT+00:00").replace(/^GMT/, "");
+  // parts.timeZoneName like "GMT+02:00" or "GMT+2" → normalize to "+HH:MM"
+  let offset = (parts.timeZoneName || "GMT+00:00").replace(/^GMT/, "");
+
+  // FIX: Normalize offset to +HH:MM format (handle "+2" or "+3" from some Node.js versions)
+  if (offset && !/[+-]\d{2}:\d{2}/.test(offset)) {
+    const match = offset.match(/([+-])(\d{1,2})/);
+    if (match) {
+      offset = `${match[1]}${match[2].padStart(2, '0')}:00`;
+    }
+  }
+
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${offset}`;
 }
 
@@ -424,6 +433,29 @@ function parseWithCode(text, nowISO, langHint) {
       return d;
     }
 
+    // Relative time patterns: "pēc 10 minūtēm", "pēc stundas", "pēc pusstundas"
+    const mRelativeMinutes = lower.match(/pēc\s+(\d+)\s*min/);
+    const mRelativeHours = lower.match(/pēc\s+(\d+)\s*stund/);
+    const mRelativeWords = lower.match(/pēc\s+(pusotras|stundas|pusstundas)/);
+
+    if (mRelativeMinutes) {
+      const mins = parseInt(mRelativeMinutes[1], 10);
+      startDate = new Date(now.getTime() + mins * 60 * 1000);
+      endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // +1h duration
+      console.log(`🔍 Relative time: +${mins} minutes from now`);
+    } else if (mRelativeHours) {
+      const hours = parseInt(mRelativeHours[1], 10);
+      startDate = new Date(now.getTime() + hours * 60 * 60 * 1000);
+      endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+      console.log(`🔍 Relative time: +${hours} hours from now`);
+    } else if (mRelativeWords) {
+      const word = mRelativeWords[1];
+      const mins = word === 'pusstundas' ? 30 : word === 'pusotras' ? 90 : 60;
+      startDate = new Date(now.getTime() + mins * 60 * 1000);
+      endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+      console.log(`🔍 Relative time: ${word} = +${mins} minutes from now`);
+    }
+
     // Dayparts
     const hasMorning = /\bno rīta\b/.test(lower);
     const hasNoon = /\bpusdienlaikā\b/.test(lower);
@@ -481,27 +513,28 @@ function parseWithCode(text, nowISO, langHint) {
     console.log(`🔍 Parser v2 state: text="${t.substring(0, 50)}", wordTime=${JSON.stringify(wordTime)}, baseDay=${baseDay.toISOString().substring(0, 10)}, hasRelativeDay=${/\b(rīt|rītdien|rīta|parīt|šodien)\b/.test(lower)}, lower="${lower.substring(0, 50)}"`);
 
     // Interval: "no 9 līdz 11" or "no 09:00 līdz 11:00"
+    // Only apply if relative time hasn't already set startDate
     const mInterval = lower.match(/no\s+(\d{1,2})(?::(\d{2}))?\s+līdz\s+(\d{1,2})(?::(\d{2}))?/);
-    if (mInterval) {
+    if (!startDate && mInterval) {
       const sh = parseInt(mInterval[1], 10); const sm = mInterval[2] ? parseInt(mInterval[2], 10) : 0;
       const eh = parseInt(mInterval[3], 10); const em = mInterval[4] ? parseInt(mInterval[4], 10) : 0;
       startDate = applyTime(baseDay, sh, sm);
       endDate = applyTime(baseDay, eh, em);
-    } else if (isPusdevinos) {
+    } else if (!startDate && isPusdevinos) {
       startDate = applyTime(baseDay, 8, 30);
       endDate = applyTime(baseDay, 9, 30);
-    } else if (wordTime) {
+    } else if (!startDate && wordTime) {
       // Prioritizēt vārdiskos laikus (desmitos, deviņos trīsdesmit) pirms skaitliskajiem
       console.log(`🔍 Parser v2: wordTime found: ${JSON.stringify(wordTime)}, applying to baseDay ${baseDay.toISOString().substring(0, 10)}`);
       startDate = applyTime(baseDay, wordTime.h, wordTime.m);
       endDate = applyTime(baseDay, ((wordTime.h + 1) % 24), wordTime.m);
       console.log(`🔍 Parser v2: startDate=${startDate ? startDate.toISOString() : 'null'}, endDate=${endDate ? endDate.toISOString() : 'null'}`);
-    } else if (mHHMM) {
+    } else if (!startDate && mHHMM) {
       // Explicit laiks (10:00) - prioritizē pirms day-part defaults
       const hh = parseInt(mHHMM[1], 10); const mm = parseInt(mHHMM[2], 10);
       startDate = applyTime(baseDay, hh, mm);
       endDate = applyTime(baseDay, hh + 1, mm);
-    } else if (mHH) {
+    } else if (!startDate && mHH) {
       // Explicit laiks (10) - prioritizē pirms day-part defaults
       const hh = parseInt(mHH[1], 10);
       if (hh >= 0 && hh <= 23) {
@@ -534,12 +567,34 @@ function parseWithCode(text, nowISO, langHint) {
     if (startDate) {
       const startISO = toRigaISO(startDate);
       const endISO = toRigaISO(endDate || new Date(startDate.getTime() + 60 * 60 * 1000));
+
+      // Dynamic confidence calculation
+      let confidence = 0.85; // base confidence
+
+      // Boost confidence for explicit time indicators
+      if (wordTime || mHHMM || mRelativeMinutes || mRelativeHours || mRelativeWords) {
+        confidence += 0.07; // explicit time → higher confidence
+      }
+
+      // Boost confidence for explicit day indicators
+      if (/\b(rīt|parīt|šodien|pirmdien|otrdien|trešdien|ceturtdien|piektdien|sestdien|svētdien)\b/.test(lower)) {
+        confidence += 0.05;
+      }
+
+      // Boost confidence for explicit type indicators
+      if (/(tikšanās|sapulce|atgādini|reminder|meeting)/i.test(lower)) {
+        confidence += 0.03;
+      }
+
+      // Cap confidence at 0.95 (never 1.0, always room for LLM fallback)
+      confidence = Math.min(0.95, confidence);
+
       // Heuristic type: if text mentions atgādināt/reminder, vai ja nav end (vienkāršs reminders)
       // Ja nav explicit "calendar" vai "event" keywords, default uz reminder, ja ir laiks
       const isReminder = /(atgādin|reminder)/i.test(lower) || (!/(sapulce|tikšanās|event|meeting)/i.test(lower) && !endDate);
       const out = isReminder
-        ? { type: 'reminder', lang: (langHint || 'lv'), start: startISO, description: t, hasTime: true, confidence: 0.9 }
-        : { type: 'calendar', lang: (langHint || 'lv'), start: startISO, end: endISO, description: t, confidence: 0.9 };
+        ? { type: 'reminder', lang: (langHint || 'lv'), start: startISO, description: t, hasTime: true, confidence }
+        : { type: 'calendar', lang: (langHint || 'lv'), start: startISO, end: endISO, description: t, confidence };
       return out;
     }
 
@@ -745,6 +800,13 @@ const LV_COMBINED_ANALYSIS_PROMPT = `Tu esi latviešu valodas eksperts, kas anal
 2. IZLABOT kļūdas - gramatika, pareizrakstība, vārdu formas
 3. UZLABOT skaidrību - padarīt tekstu skaidrāku un precīzāku
 4. SAGLABĀT nozīmi - neizmainīt sākotnējo nozīmi
+
+⚠️ KRITISKS NOTEIKUMS: JA TEKSTS IR NESAPROTAMS VAI NESKAIDRS:
+- ATGRIEZ TO TĀDU PAŠU (NEMAINĪTU)
+- NEKAD neizdomi jaunu nozīmi
+- NEKAD neinterpretē sliktu transkripciju kā citu vārdu
+- Piemērs: "da su mai zeng" → "da su mai zeng" (NE "dažādi suņi")
+- Ja šaubies par nozīmi → atgriez oriģinālu
 
 SAGLABĀT PERSONU VĀRDUS, ĢIMENES RELĀCIJAS UN KONTEKSTU:
 - "WhatsApp sapulce ar Silardu" → "WhatsApp sapulce ar Silardu" (NEMAINĪT)
