@@ -695,14 +695,17 @@ class LatvianCalendarParserV3 {
     
     let offset = targetIsoDay - curIsoDay;
     
-    // If same day
+    // If same day (offset === 0), return today
+    // Time validation will happen in buildResult - if time has passed, 
+    // buildResult will adjust to next week
     if (offset === 0) {
-      // Check if time has passed (will be determined in extractTime)
-      // For now, default to next week if same day
-      offset = 7;
+      // Return today - let buildResult handle time validation
+      offset = 0;
     } else if (offset < 0) {
+      // Target weekday is in the past this week, move to next week
       offset += 7;
     }
+    // If offset > 0, target is in future this week, use that offset
     
     const result = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + offset, 0, 0, 0);
     return result;
@@ -717,7 +720,7 @@ class LatvianCalendarParserV3 {
       minute: 0
     };
 
-    // 1. Check interval (no 9 līdz 11)
+    // 1. FIRST: Check interval (no 9 līdz 11) - highest priority
     const intervalMatch = lower.match(/no\s+(\d{1,2})(?::(\d{2}))?\s+līdz\s+(\d{1,2})(?::(\d{2}))?/);
     if (intervalMatch) {
       const sh = parseInt(intervalMatch[1], 10);
@@ -735,7 +738,7 @@ class LatvianCalendarParserV3 {
       };
     }
 
-    // 2. Check numeric time (HH:MM or HH)
+    // 2. SECOND: Check numeric time (HH:MM) - higher priority than day-parts
     const timeMatch = lower.match(/\b(\d{1,2}):(\d{2})\b/);
     if (timeMatch) {
       const h = parseInt(timeMatch[1], 10);
@@ -746,24 +749,26 @@ class LatvianCalendarParserV3 {
         result.hour = h;
         result.minute = m;
         result.start = this.setTime(baseDate, h, m);
-        return result;
+        return result; // Return immediately - numeric time has priority
       }
     }
 
-    // Single hour (pulksten 10, just "10")
-    const hourMatch = lower.match(/\b(\d{1,2})\b/);
-    if (hourMatch && !timeMatch) {
-      const h = parseInt(hourMatch[1], 10);
-      if (h >= 0 && h <= 23) {
-        result.hasExplicitTime = true;
-        result.hour = h;
-        result.minute = 0;
-        result.start = this.setTime(baseDate, h, 0);
-        return result;
+    // 2b. SECOND: Check single hour (pulksten 10, just "10") - but only if no HH:MM found
+    if (!timeMatch) {
+      const hourMatch = lower.match(/\b(\d{1,2})\b/);
+      if (hourMatch) {
+        const h = parseInt(hourMatch[1], 10);
+        if (h >= 0 && h <= 23) {
+          result.hasExplicitTime = true;
+          result.hour = h;
+          result.minute = 0;
+          result.start = this.setTime(baseDate, h, 0);
+          return result; // Return immediately - numeric time has priority
+        }
       }
     }
 
-    // 3. Check word time (desmitos, deviņos trīsdesmit)
+    // 3. THIRD: Check word time (desmitos, deviņos trīsdesmit) - higher priority than day-parts
     const wordTime = this.extractWordTime(lower);
     if (wordTime) {
       result.hasExplicitTime = true;
@@ -777,10 +782,11 @@ class LatvianCalendarParserV3 {
       }
       
       result.start = this.setTime(baseDate, result.hour, result.minute);
-      return result;
+      return result; // Return immediately - word time has priority over day-parts
     }
 
-    // 4. Check day parts (no rīta, vakarā, etc.)
+    // 4. LAST: Check day parts (no rīta, vakarā, etc.) - lowest priority
+    // Only used if no explicit numeric or word time was found
     for (const [phrase, info] of this.dayParts) {
       if (lower.includes(phrase)) {
         result.hasExplicitTime = true;
@@ -893,12 +899,28 @@ class LatvianCalendarParserV3 {
       endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
     }
 
-    // Fix: if start is in past and dateInfo.isToday, might need to adjust
-    if (dateInfo.isToday && startDate && startDate < now) {
-      // If time has passed today, move to next occurrence of weekday
+    // Fix: if start is in past, adjust to next occurrence
+    // Check if it's today (either isToday flag or same weekday)
+    const isToday = dateInfo.isToday || 
+      (dateInfo.type === 'weekday' && 
+       startDate && 
+       startDate.getDate() === now.getDate() && 
+       startDate.getMonth() === now.getMonth() && 
+       startDate.getFullYear() === now.getFullYear());
+    
+    if (isToday && startDate && startDate < now) {
+      // If time has passed today, move to next occurrence
       if (dateInfo.type === 'weekday' && dateInfo.targetIsoDay) {
-        startDate = this.getNextWeekday(now, dateInfo.targetIsoDay);
+        // For weekdays, get next occurrence (7 days later)
+        const nextWeekday = new Date(now);
+        nextWeekday.setDate(nextWeekday.getDate() + 7);
+        startDate = this.getNextWeekday(nextWeekday, dateInfo.targetIsoDay);
         startDate.setHours(timeInfo.hour || 9, timeInfo.minute || 0, 0, 0);
+        endDate = new Date(startDate.getTime() + (duration || 60) * 60 * 1000);
+      } else if (dateInfo.isToday) {
+        // For other "today" cases, move to tomorrow with same time
+        startDate = new Date(startDate);
+        startDate.setDate(startDate.getDate() + 1);
         endDate = new Date(startDate.getTime() + (duration || 60) * 60 * 1000);
       }
     }
@@ -931,7 +953,21 @@ class LatvianCalendarParserV3 {
     });
     const partsArr = dtf.formatToParts(date);
     const parts = Object.fromEntries(partsArr.map(p => [p.type, p.value]));
-    const offset = (parts.timeZoneName || "GMT+00:00").replace(/^GMT/, "");
+    let offset = (parts.timeZoneName || "GMT+00:00").replace(/^GMT/, "");
+    
+    // Normalize offset to always be "+HH:MM" or "-HH:MM" format
+    // Handles: "+2" → "+02:00", "+02" → "+02:00", "+03" → "+03:00", "+02:00" → "+02:00"
+    const offsetMatch = offset.match(/^([+-])(\d{1,2})(?::(\d{2}))?$/);
+    if (offsetMatch) {
+      const sign = offsetMatch[1];
+      const hours = offsetMatch[2].padStart(2, '0');
+      const minutes = offsetMatch[3] || '00';
+      offset = `${sign}${hours}:${minutes}`;
+    } else {
+      // Fallback if parsing fails
+      offset = "+02:00";
+    }
+    
     return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${offset}`;
   }
 }
