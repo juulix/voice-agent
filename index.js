@@ -1692,25 +1692,19 @@ app.post("/test-parse", async (req, res) => {
     const nowISO = toRigaISO(new Date());
     
     // Izmantojam to pašu parsēšanas loģiku kā /ingest-audio
-    // Feature flags
-    const parserV2 = true; // Testos vienmēr ieslēdzam
-    const textQCv2 = true;
-    
-    // Parsēšana ar Parser v3 vai LLM
+    // Parsēšana ar Parser v3 vai LLM (V3 vienmēr ieslēgts)
     let parsed = null;
     
-    if (parserV2) {
-      console.log(`🧭 [TEST] Parser v3 attempting parse: "${analyzedText}"`);
-      parsed = parseWithV3(analyzedText, nowISO, langHint);
-      if (parsed && parsed.confidence >= 0.8) {
-        console.log(`🧭 [TEST] Parser v3 used: type=${parsed.type}`);
-        parsed.raw_transcript = raw;
-        parsed.normalized_transcript = norm;
-        parsed.analyzed_transcript = analyzedText;
-        parsed.analysis_applied = false;
-        parsed.test_mode = true;
-        return res.json(parsed);
-      }
+    console.log(`🧭 [TEST] Parser v3 attempting parse: "${analyzedText}"`);
+    parsed = parseWithV3(analyzedText, nowISO, langHint);
+    if (parsed && parsed.confidence >= 0.8) {
+      console.log(`🧭 [TEST] Parser v3 used: type=${parsed.type}`);
+      parsed.raw_transcript = raw;
+      parsed.normalized_transcript = norm;
+      parsed.analyzed_transcript = analyzedText;
+      parsed.analysis_applied = false;
+      parsed.test_mode = true;
+      return res.json(parsed);
     }
     
     // LLM fallback
@@ -1933,8 +1927,7 @@ app.post("/ingest-audio", async (req, res) => {
 
   const userMsg = `currentTime=${nowISO}\ntomorrowExample=${tomorrowISO}\nTeksts: ${analyzedText}`;
 
-  // Feature flags via headers or allowlists (no app update required)
-  const headerParserV2 = (req.header("X-Parser") || "").toLowerCase() === "v2";
+  // Feature flags via headers (no app update required)
   const headerQcV2 = (req.header("X-Text-QC") || "").toLowerCase() === "v2";
   const headerShoppingList = (req.header("X-Shopping-Style") || "").toLowerCase() === "list";
 
@@ -1946,65 +1939,63 @@ app.post("/ingest-audio", async (req, res) => {
   const userIdHdr = req.header("X-User-Id") || "";
   const allowlisted = (allowDevices.includes(deviceIdHdr) || allowUsers.includes(userIdHdr));
 
-  const parserV2 = headerParserV2 || allowlisted;
   const qcV2 = headerQcV2 || allowlisted;
   const shoppingStyleList = headerShoppingList || allowlisted;
 
-  // Parsēšana uz JSON (ar v2 kodā, ja ieslēgts; citādi LLM)
+  // Text quality check v2
   if (qcV2) {
     // hasCommonErrors v2: no diacritics/lowercase heuristics; rely on concrete fixes + score
     // Already achieved by not altering analyzedText here; we just log the mode
     console.log(`🧪 QC v2 enabled`);
   }
 
-  if (parserV2) {
-    console.log(`🧭 Parser v3 attempting parse: "${analyzedText}"`);
-    const parsed = parseWithV3(analyzedText, nowISO, langHint);
-    // Ja Parser v3 atgriež objektu ar pietiekamu confidence (≥0.8), izmanto to bez LLM
-    if (parsed && parsed.confidence >= 0.8) {
-      console.log(`🧭 Parser v3 used (confidence: ${parsed.confidence}): type=${parsed.type}, start=${parsed.start}, end=${parsed.end || 'none'}`);
-      parsed.raw_transcript = raw;
-      parsed.normalized_transcript = norm;
-      parsed.analyzed_transcript = analyzedText;
-      parsed.analysis_applied = needsAnalysis;
-      parsed.confidence = score;
-      if (parsed.type === 'shopping' && shoppingStyleList) {
-        parsed.description = parsed.description || 'Pirkumu saraksts';
-      }
-      // Kvotu skaitīšana un atbilde kā zemāk (kopējam no success ceļa)
-      u.daily.used += 1;
-      operationsTotal.inc({ status: "success", plan: limits.plan }, 1);
-      await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
-      databaseOperations.inc({ operation: "update", table: "quota_usage" }, 1);
-      quotaUsage.inc({ plan: limits.plan, type: "daily" }, 1);
-      if (limits.plan === "pro") { quotaUsage.inc({ plan: limits.plan, type: "monthly" }, 1); }
-      parsed.quota = {
-        plan: limits.plan,
-        dailyLimit: normalizeDaily(limits.dailyLimit),
-        dailyUsed: u.daily.used,
-        dailyRemaining: limits.dailyLimit >= 999999 ? null : Math.max(0, limits.dailyLimit - u.daily.used),
-        dailyGraceLimit: GRACE_DAILY,
-        dailyGraceUsed: u.daily.graceUsed
-      };
-      if (limits.plan === 'pro') {
-        parsed.quota.monthlyLimit = limits.monthlyLimit;
-        parsed.quota.monthlyUsed = u.monthly.used;
-        parsed.quota.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
-      }
-      parsed.requestId = req.requestId;
-      const processingTime = Date.now() - processingStart;
-      audioProcessingTime.observe({ status: "success" }, processingTime);
-      
-      // Log transcript flow
-      logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, score, parsed);
-      
-      return res.json(parsed);
-    } else {
-      console.log(`🧭 Parser v2 returned ${parsed ? `low confidence (${parsed.confidence || 0})` : 'null'}, falling back to LLM`);
+  // Parser V3 vienmēr ieslēgts visiem lietotājiem
+  console.log(`🧭 Parser v3 attempting parse: "${analyzedText}"`);
+  const parsed = parseWithV3(analyzedText, nowISO, langHint);
+  // Ja Parser v3 atgriež objektu ar pietiekamu confidence (≥0.8), izmanto to bez LLM
+  if (parsed && parsed.confidence >= 0.8) {
+    console.log(`🧭 Parser v3 used (confidence: ${parsed.confidence}): type=${parsed.type}, start=${parsed.start}, end=${parsed.end || 'none'}`);
+    parsed.raw_transcript = raw;
+    parsed.normalized_transcript = norm;
+    parsed.analyzed_transcript = analyzedText;
+    parsed.analysis_applied = needsAnalysis;
+    parsed.confidence = score;
+    if (parsed.type === 'shopping' && shoppingStyleList) {
+      parsed.description = parsed.description || 'Pirkumu saraksts';
     }
+    // Kvotu skaitīšana un atbilde kā zemāk (kopējam no success ceļa)
+    u.daily.used += 1;
+    operationsTotal.inc({ status: "success", plan: limits.plan }, 1);
+    await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
+    databaseOperations.inc({ operation: "update", table: "quota_usage" }, 1);
+    quotaUsage.inc({ plan: limits.plan, type: "daily" }, 1);
+    if (limits.plan === "pro") { quotaUsage.inc({ plan: limits.plan, type: "monthly" }, 1); }
+    parsed.quota = {
+      plan: limits.plan,
+      dailyLimit: normalizeDaily(limits.dailyLimit),
+      dailyUsed: u.daily.used,
+      dailyRemaining: limits.dailyLimit >= 999999 ? null : Math.max(0, limits.dailyLimit - u.daily.used),
+      dailyGraceLimit: GRACE_DAILY,
+      dailyGraceUsed: u.daily.graceUsed
+    };
+    if (limits.plan === 'pro') {
+      parsed.quota.monthlyLimit = limits.monthlyLimit;
+      parsed.quota.monthlyUsed = u.monthly.used;
+      parsed.quota.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
+    }
+    parsed.requestId = req.requestId;
+    const processingTime = Date.now() - processingStart;
+    audioProcessingTime.observe({ status: "success" }, processingTime);
+    
+    // Log transcript flow
+    logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, score, parsed);
+    
+    return res.json(parsed);
+  } else {
+    console.log(`🧭 Parser v3 returned ${parsed ? `low confidence (${parsed.confidence || 0})` : 'null'}, falling back to LLM`);
   }
 
-  // Ja v2 neizdevās vai nav ieslēgts – krītam atpakaļ uz LLM ar JSON Schema
+  // Ja Parser V3 neizdevās – krītam atpakaļ uz LLM
   console.log(`🤖 LLM fallback: parsing with GPT for "${analyzedText.substring(0, 50)}..."`);
   let chat;
   const maxRetries = 2;
