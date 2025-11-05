@@ -18,6 +18,13 @@ if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1);
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || process.env.ECHOTIME_ONBOARDING_API_KEY;
 const anthropic = ANTHROPIC_API_KEY ? new Anthropic({ apiKey: ANTHROPIC_API_KEY }) : null;
 
+// Debug: Log Teacher-Student mode status
+console.log(`🔍 Teacher-Student Learning Mode: ${LEARNING_MODE ? 'ON' : 'OFF'}`);
+console.log(`🔍 Anthropic API: ${anthropic ? 'initialized' : 'NOT configured (ANTHROPIC_API_KEY missing)'}`);
+if (LEARNING_MODE && anthropic) {
+  console.log(`✅ Teacher-Student mode ready: model=${TEACHER_MODEL}, rate=${TEACHER_RATE}, thresholds=[${CONFIDENCE_THRESHOLD_LOW}-${CONFIDENCE_THRESHOLD_HIGH}]`);
+}
+
 // Initialize Sentry
 if (process.env.SENTRY_DSN) {
   Sentry.init({ 
@@ -43,7 +50,7 @@ const DEFAULT_TEXT_MODEL = "gpt-4.1-mini";   // galvenajām operācijām
 const CHEAP_TASK_MODEL  = "gpt-4.1-mini";    // kopsavilkumi/klasifikācija u.tml.
 
 // Teacher-Student Learning Mode Configuration
-const LEARNING_MODE = process.env.LEARNING_MODE === 'on';
+const LEARNING_MODE = (process.env.LEARNING_MODE || '').toLowerCase() === 'on';
 const TEACHER_MODEL = process.env.TEACHER_MODEL || 'claude-sonnet-4-20250514'; // Claude Sonnet 4.5
 const TEACHER_RATE = parseFloat(process.env.TEACHER_RATE || '0.3'); // Max 30% of requests
 const CONFIDENCE_THRESHOLD_HIGH = parseFloat(process.env.CONFIDENCE_THRESHOLD_HIGH || '0.8');
