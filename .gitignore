@@ -41,12 +41,17 @@ dist/
 build/
 *.tsbuildinfo
 
-# Test files
-coverage/
-.nyc_output/
+# Test files (moved to tests/ directory)
+# Keep test files in git for development, but they're organized now
 
 # Temporary files
 tmp/
 temp/
 *.tmp
+*.zip
 
+# Documentation (moved to docs/ directory)
+# Keep docs in git for reference
+
+# Cleanup script output (if any)
+cleanup.log
