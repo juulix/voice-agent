@@ -1627,19 +1627,163 @@ class LatvianCalendarParserV3 {
     return date;
   }
 
-  buildResult({ type, text, lower, dateInfo, timeInfo, duration, langHint, now }) {
-    // Clean description - remove ONLY structured time/date info, KEEP contextual info
-    let cleanDescription = text;
+  /**
+   * Clean reminder text for display - removes meta-info, keeps action
+   * @param {string} text - Original user intent text
+   * @returns {string} - Cleaned display text
+   */
+  cleanReminderText(text) {
+    if (!text || typeof text !== 'string') return text;
     
-    // Track what we're keeping for logging
-    const semanticTagsKept = {
+    let cleaned = text.trim();
+    const original = cleaned;
+    
+    // Extract deadline info (līdz X) before removing dates
+    let deadlineInfo = null;
+    const deadlineMatch = cleaned.match(/\blīdz\s+(\d{1,2}\.\s*(?:janvār|februār|mart|aprīl|maij|jūnij|jūlij|august|septembr|oktobr|novembr|decembr)(?:ī|a|ā)?|\d{1,2}\.\d{1,2}\.|\d{1,2}\.\s*\d{1,2})/i);
+    if (deadlineMatch) {
+      // Format deadline: "15. novembrī" → "15.11." or "15.11" → "15.11."
+      let deadline = deadlineMatch[1].trim();
+      // If it's "15. novembrī", convert to "15.11."
+      const monthNames = {
+        'janvār': '01', 'janvārī': '01', 'janvāra': '01',
+        'februār': '02', 'februārī': '02', 'februāra': '02',
+        'mart': '03', 'martā': '03', 'marta': '03',
+        'aprīl': '04', 'aprīlī': '04', 'aprīla': '04',
+        'maij': '05', 'maijā': '05', 'maija': '05',
+        'jūnij': '06', 'jūnijā': '06', 'jūnija': '06',
+        'jūlij': '07', 'jūlijā': '07', 'jūlija': '07',
+        'august': '08', 'augustā': '08', 'augusta': '08',
+        'septembr': '09', 'septembrī': '09', 'septembra': '09',
+        'oktobr': '10', 'oktobrī': '10', 'oktobra': '10',
+        'novembr': '11', 'novembrī': '11', 'novembra': '11',
+        'decembr': '12', 'decembrī': '12', 'decembra': '12'
+      };
+      const monthMatch = deadline.match(/(\d{1,2})\.\s*([a-zāēīūō]+)/i);
+      if (monthMatch) {
+        const day = monthMatch[1];
+        const monthName = monthMatch[2].toLowerCase();
+        const monthNum = monthNames[monthName];
+        if (monthNum) {
+          deadline = `${day}.${monthNum}.`;
+        }
+      } else if (!deadline.endsWith('.')) {
+        deadline = deadline + '.';
+      }
+      deadlineInfo = deadline;
+    }
+    
+    // 1. Remove reminder keywords (atgādini, atgādinājums, etc.)
+    cleaned = cleaned.replace(/\b(atgādini|atgādinājums|atgādināt|atgādinājumu|atgādiniet|atgādināšu|atgādināsim|atgādināju|atgādināja)\b/gi, '');
+    
+    // 2. Remove relative time phrases (pēc X minūtēm/stundām/dienām)
+    cleaned = cleaned.replace(/\bpēc\s+(\d+|vienas?|divām|trim|četrām|piecām|sešām|septiņām|astoņām|deviņām|desmit|vienpadsmit|divpadsmit|trīspadsmit|četrpadsmit|piecpadsmit|sešpadsmit|septiņpadsmit|astoņpadsmit|deviņpadsmit|divdesmit)\s+(minūtēm|min|stundām|stundas|dienām|dienas|stundu|dienu)\b/gi, '');
+    
+    // 3. Remove relative dates (rīt, parīt, šodien, vakar) - these are trigger conditions
+    cleaned = cleaned.replace(/\b(rīt|rītdien|parīt|parītdien|šodien|vakar|nākamnedēļ|nākamajā nedēļā)\b/gi, '');
+    
+    // 4. Remove weekdays (trešdien, pirmdien, etc.) - trigger conditions
+    cleaned = cleaned.replace(/\b(pirmdien|otrdien|trešdien|ceturtdien|piektdien|sestdien|svētdien)(a|u|ā)?\b/gi, '');
+    
+    // 5. Remove absolute time markers (pulksten, plkst., etc.)
+    cleaned = cleaned.replace(/\b(pulksten|pulkstenis|pulkstens|plkst\.?|pl\.)\b/gi, '');
+    
+    // 6. Remove numeric times (HH:MM, HH.MM, 10.00, etc.)
+    cleaned = cleaned.replace(/\b\d{1,2}[.:]\d{2}\b/g, '');
+    cleaned = cleaned.replace(/\b\d{1,2}\.\d{2}\b/g, ''); // 10.00 format
+    
+    // 7. Remove time words (desmitos, divos, trijos, etc.)
+    const timeWordPattern = /\b(vienā|divos|trijos|četros|piecos|sešos|septiņos|astoņos|deviņos|desmitos|vienpadsmitos|divpadsmitos|vienam|diviem|trijiem|četriem|pieciem|sešiem|septiņiem|astoņiem|deviņiem|desmitiem|vienpadsmitiem|divpadsmitiem)\b/gi;
+    cleaned = cleaned.replace(timeWordPattern, '');
+    
+    // 8. Remove specific numeric dates (15. novembrī, 2025-11-15) - but keep if part of "līdz" phrase
+    // First, mark "līdz X" phrases to preserve
+    const līdzPattern = /\blīdz\s+(\d{1,2}\.\s*(?:janvār|februār|mart|aprīl|maij|jūnij|jūlij|august|septembr|oktobr|novembr|decembr)(?:ī|a|ā)?|\d{1,2}\.\d{1,2}\.|\d{1,2}\.\s*\d{1,2})/gi;
+    const līdzMatches = [...cleaned.matchAll(līdzPattern)];
+    // Temporarily replace "līdz X" with placeholder
+    let placeholderIndex = 0;
+    const placeholders = [];
+    cleaned = cleaned.replace(līdzPattern, (match) => {
+      const placeholder = `__LIDZ_PLACEHOLDER_${placeholderIndex}__`;
+      placeholders.push(match);
+      placeholderIndex++;
+      return placeholder;
+    });
+    
+    // Now remove dates
+    cleaned = cleaned.replace(/\b\d{1,2}\.\s*(janvār|februār|mart|aprīl|maij|jūnij|jūlij|august|septembr|oktobr|novembr|decembr)(ī|a|ā)?\b/gi, '');
+    cleaned = cleaned.replace(/\b\d{4}-\d{2}-\d{2}\b/g, '');
+    cleaned = cleaned.replace(/\b\d{1,2}\.\s*\d{1,2}\.\b/g, ''); // 15.11. format
+    
+    // Restore "līdz X" placeholders (will be handled by deadlineInfo)
+    placeholders.forEach((match, idx) => {
+      cleaned = cleaned.replace(`__LIDZ_PLACEHOLDER_${idx}__`, '');
+    });
+    
+    // 9. Remove helper words (man, lūdzu, etc.)
+    cleaned = cleaned.replace(/\b(man|lūdzu|lūdzu,|lūdzu\.|vai|varbūt|vēlāk|tad)\b/gi, '');
+    
+    // 10. Remove colons/dashes after "atgādinājums:" or "atgādini -"
+    cleaned = cleaned.replace(/^[:\-–—]\s*/g, '');
+    cleaned = cleaned.replace(/\s*[:\-–—]\s*/g, ' ');
+    
+    // 11. Clean up spaces and punctuation
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+    cleaned = cleaned.replace(/^[.,;:]\s*/g, '');
+    cleaned = cleaned.replace(/\s*[.,;:]\s*$/g, '');
+    
+    // 12. Add deadline info in parentheses if present
+    if (deadlineInfo) {
+      cleaned = cleaned.replace(/\blīdz\s+/gi, ''); // Remove "līdz" word itself
+      cleaned = cleaned.trim();
+      if (cleaned && !cleaned.includes(`(${deadlineInfo})`)) {
+        cleaned = `${cleaned} (līdz ${deadlineInfo})`;
+      }
+    }
+    
+    // 13. Final cleanup
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+    
+    // 14. Fallback: if empty or too short, return original (or less aggressive cleaning)
+    if (!cleaned || cleaned.length < 3) {
+      // Try less aggressive: just remove "atgādini" keywords
+      let fallback = original.replace(/\b(atgādini|atgādinājums|atgādināt|atgādinājumu|atgādiniet)\b/gi, '').trim();
+      fallback = fallback.replace(/^[:\-–—]\s*/g, '').trim();
+      if (fallback && fallback.length >= 3) {
+        cleaned = fallback;
+      } else {
+        cleaned = original; // Last resort: return original
+      }
+    }
+    
+    // 15. Capitalize first letter (for display)
+    if (cleaned && cleaned.length > 0) {
+      cleaned = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+    }
+    
+    return cleaned;
+  }
+
+  buildResult({ type, text, lower, dateInfo, timeInfo, duration, langHint, now }) {
+    // For reminders, use special cleaning that removes meta-info (atgādini, pēc X min, etc.)
+    // For calendar events, use standard cleaning that keeps contextual info
+    let cleanDescription;
+    let semanticTagsKept = {
       relativeDate: false,
       weekday: false,
       daypart: false,
       relativeTime: false
     };
     
-    // SAGLABĀT relatīvos datumus (rīt, šodien, parīt, nākamnedēļ)
+    if (type === 'reminder') {
+      cleanDescription = this.cleanReminderText(text);
+    } else {
+      // Clean description - remove ONLY structured time/date info, KEEP contextual info
+      cleanDescription = text;
+      
+      // Track what we're keeping for logging
+      
+      // SAGLABĀT relatīvos datumus (rīt, šodien, parīt, nākamnedēļ)
     // Check if we have relative dates - if yes, mark them to keep
     if (/\b(rīt|rītdien|šodien|parīt|parītdien|nākamnedēļ|nākamajā nedēļā)\b/gi.test(cleanDescription)) {
       semanticTagsKept.relativeDate = true;
@@ -1688,9 +1832,10 @@ class LatvianCalendarParserV3 {
     cleanDescription = cleanDescription.replace(/\s+([.,;:])\s+/g, ' '); // punctuation between words
     cleanDescription = cleanDescription.replace(/\s+/g, ' ').trim(); // final cleanup
     
-    // If description is empty after cleaning, use original text
-    if (!cleanDescription || cleanDescription.length < 3) {
-      cleanDescription = text;
+      // If description is empty after cleaning, use original text
+      if (!cleanDescription || cleanDescription.length < 3) {
+        cleanDescription = text;
+      }
     }
     
     // Log semantic tags kept for monitoring
@@ -1699,9 +1844,15 @@ class LatvianCalendarParserV3 {
     const result = {
       type,
       lang: langHint,
-      description: cleanDescription,
+      description: cleanDescription, // For reminders: cleaned display text; for calendar: contextual text
+      user_intent_text: text, // Original user intent text (for audit, debug, learning)
       _semanticTagsKept: semanticTagsKept // For monitoring/logging
     };
+    
+    // For reminders, also set reminder_display_text (alias for description)
+    if (type === 'reminder') {
+      result.reminder_display_text = cleanDescription;
+    }
 
     // If no explicit time info
     if (!timeInfo.hasExplicitTime && !dateInfo.hasExactTime) {
