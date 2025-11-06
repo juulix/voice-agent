@@ -263,10 +263,40 @@ db.serialize(() => {
   )`);
   
   // Add new columns if they don't exist (backward compatible)
-  db.run(`ALTER TABLE v3_gold_log ADD COLUMN IF NOT EXISTS am_pm_decision TEXT`);
-  db.run(`ALTER TABLE v3_gold_log ADD COLUMN IF NOT EXISTS desc_had_time_tokens_removed INTEGER DEFAULT 0`);
-  db.run(`ALTER TABLE v3_gold_log ADD COLUMN IF NOT EXISTS confidence_before REAL`);
-  db.run(`ALTER TABLE v3_gold_log ADD COLUMN IF NOT EXISTS confidence_after REAL`);
+  // SQLite doesn't support IF NOT EXISTS with ALTER TABLE, so we check first
+  db.all(`PRAGMA table_info(v3_gold_log)`, (err, columns) => {
+    if (err) {
+      console.error('❌ Failed to check table info:', err);
+      return;
+    }
+    
+    const columnNames = columns.map(col => col.name);
+    
+    // Add columns only if they don't exist
+    if (!columnNames.includes('am_pm_decision')) {
+      db.run(`ALTER TABLE v3_gold_log ADD COLUMN am_pm_decision TEXT`, (err) => {
+        if (err) console.error('❌ Failed to add am_pm_decision:', err);
+      });
+    }
+    
+    if (!columnNames.includes('desc_had_time_tokens_removed')) {
+      db.run(`ALTER TABLE v3_gold_log ADD COLUMN desc_had_time_tokens_removed INTEGER DEFAULT 0`, (err) => {
+        if (err) console.error('❌ Failed to add desc_had_time_tokens_removed:', err);
+      });
+    }
+    
+    if (!columnNames.includes('confidence_before')) {
+      db.run(`ALTER TABLE v3_gold_log ADD COLUMN confidence_before REAL`, (err) => {
+        if (err) console.error('❌ Failed to add confidence_before:', err);
+      });
+    }
+    
+    if (!columnNames.includes('confidence_after')) {
+      db.run(`ALTER TABLE v3_gold_log ADD COLUMN confidence_after REAL`, (err) => {
+        if (err) console.error('❌ Failed to add confidence_after:', err);
+      });
+    }
+  });
   
   // Indexes for gold log
   db.run(`CREATE INDEX IF NOT EXISTS idx_gold_ts ON v3_gold_log(ts)`);
