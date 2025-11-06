@@ -1,0 +1,69 @@
+# Git files (nav vajadzīgi build laikā)
+.git/
+.gitignore
+.gitattributes
+
+# Dependencies (tiek instalēti build laikā)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+quota.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Test files (nav nepieciešami production)
+test-*.js
+test-*.sh
+test-*.md
+*.test.js
+*.spec.js
+coverage/
+.nyc_output/
+
+# Documentation (nav nepieciešami production - bet README var būt noderīgs)
+*.md
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.zip
+
+# Railway config (nav vajadzīgs build laikā)
+railway.toml
+
