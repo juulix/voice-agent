@@ -1062,6 +1062,13 @@ class LatvianCalendarParserV3 {
       const originalHour = hour;
       let amPmDecision = null;
       
+      // Telemetrija: saglabāt, kādi marķieri tika atrasti un kādi lēmumi tika pieņemti
+      const telemetry = {
+        hour_7_resolved_to: null, // AM vai PM (ja hour === 7)
+        hour_6_override: false, // vai 6 tika pārveidots uz 06:00 (nevis 18:00)
+        marker_detected: null // morning/evening/night/afternoon/none
+      };
+      
       // Lexicon for context detection
       const morningMarkers = /no rīta|rītos|rīta|agrā rīta|agri no rīta|brokast/i;
       const eveningMarkers = /vakarā|vēlu vakarā|vakariņas|vakariņu/i;
@@ -1087,7 +1094,7 @@ class LatvianCalendarParserV3 {
       // Validate hour is in valid range
       if (hour < 0 || hour > 23) {
         console.error(`❌ applyPMConversion: invalid hour ${hour}, keeping as is`);
-        return { hour, minute, am_pm_decision: 'invalid' };
+        return { hour, minute, am_pm_decision: 'invalid', telemetry };
       }
       
       // STEP 0: Markers override everything (highest priority)
