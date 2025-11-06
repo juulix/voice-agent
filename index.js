@@ -1905,6 +1905,35 @@ class LatvianCalendarParserV3 {
       // Clean description - remove ONLY structured time/date info, KEEP contextual info
       cleanDescription = text;
       
+      // Remove calendar activation phrases (users say "pievieno kalendārā" to activate calendar)
+      // These are trigger phrases, not part of the actual event description
+      const calendarTriggerPhrases = [
+        /\bpievieno\s+kalendārā\b/gi,
+        /\bieliec\s+kalendārā\b/gi,
+        /\bpievieno\s+kalendāru\b/gi,
+        /\bieliec\s+kalendāru\b/gi,
+        /\bpievieno\s+to\s+kalendārā\b/gi,
+        /\bieliec\s+to\s+kalendārā\b/gi,
+        /\bpievienot\s+kalendārā\b/gi,
+        /\bielikt\s+kalendārā\b/gi,
+        /\bpievienot\s+kalendāru\b/gi,
+        /\bielikt\s+kalendāru\b/gi
+      ];
+      
+      // Remove trigger phrases
+      calendarTriggerPhrases.forEach(pattern => {
+        cleanDescription = cleanDescription.replace(pattern, '');
+      });
+      
+      // Remove "pievieno" or "ieliec" alone if at the start (common pattern: "pievieno tikšanās ar Jāni")
+      cleanDescription = cleanDescription.replace(/^\s*(pievieno|ieliec|pievienot|ielikt)\s+/gi, '');
+      
+      // Remove "man" (helper word) if it's at the start
+      cleanDescription = cleanDescription.replace(/^\s*man\s+/gi, '');
+      
+      // Clean up multiple spaces
+      cleanDescription = cleanDescription.replace(/\s+/g, ' ').trim();
+      
       // Track what we're keeping for logging
       
       // SAGLABĀT relatīvos datumus (rīt, šodien, parīt, nākamnedēļ)
