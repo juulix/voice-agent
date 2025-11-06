@@ -1242,12 +1242,12 @@ class LatvianCalendarParserV3 {
             const newHour = hour + 12;
             amPmDecision = 'day_evening_default_pm';
             console.log(`🔍 PM conversion: day/evening default (legacy) - ${hour} → ${newHour} (${hour} PM)`);
-            return { hour: newHour, minute, am_pm_decision: amPmDecision };
+            return { hour: newHour, minute, am_pm_decision: amPmDecision, telemetry };
           }
           if (hour >= 8 && hour < 12) {
             amPmDecision = 'day_evening_default_am';
             console.log(`🔍 PM conversion: day/evening default (legacy) - keeping ${hour} (AM)`);
-            return { hour, minute, am_pm_decision: amPmDecision };
+            return { hour, minute, am_pm_decision: amPmDecision, telemetry };
           }
         }
       }
@@ -1256,8 +1256,9 @@ class LatvianCalendarParserV3 {
       // "divpadsmitos vakarā" → midnight (00:00 next day)
       if (hasEveningMarker && hour === 12) {
         amPmDecision = 'midnight_rollover';
+        telemetry.marker_detected = 'evening';
         console.log(`🔍 PM conversion: 12 vakarā → midnight (00:00 next day)`);
-        return { hour: 0, minute, rolloverDay: true, am_pm_decision: amPmDecision };
+        return { hour: 0, minute, rolloverDay: true, am_pm_decision: amPmDecision, telemetry };
       }
       
       // STEP 4: Default - keep hour as is
