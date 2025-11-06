@@ -1090,17 +1090,19 @@ class LatvianCalendarParserV3 {
       
       // DIENAS/VAKARA PRIORITĀTE: Ja nav "no rīta" un nav "naktī", pieņem dienu/vakaru
       // Feature flag: DAY_EVENING_DEFAULT
+      // B. FIX: "pulksten divos" bez daypart → 14:00 (dienā), nevis 02:00 (AM)
       if (DAY_EVENING_DEFAULT && !morning && !eveningNight && !afternoon) {
         const hasNoMorning = !/no rīta|rītos|rīta|agrā rīta|agri no rīta/.test(lower);
         const hasNoNight = !/naktī|naktīs/.test(lower);
         
         // Ja nav "no rīta" un nav "naktī" → pieņem dienu/vakaru
+        // "pulksten" nav daypart, tāpēc tas netraucē šai loģikai
         if (hasNoMorning && hasNoNight) {
-          // Stundas 1-7 → +12h (dienā/vakarā)
+          // Stundas 1-7 → +12h (dienā/vakarā) - "pulksten divos" → 14:00
           if (hour >= 1 && hour <= 7) {
             const newHour = hour + 12;
             amPmDecision = 'day_evening_default_pm';
-            console.log(`🔍 PM conversion: day/evening default (no morning/no night) - ${hour} → ${newHour} (${hour} PM)`);
+            console.log(`🔍 PM conversion: day/evening default (no morning/no night) - ${hour} → ${newHour} (${hour} PM, e.g., "pulksten ${hour}" → ${newHour}:00)`);
             return { hour: newHour, minute, am_pm_decision: amPmDecision };
           }
           // Stundas 8-11 → atstāj AM (dienā)
@@ -1250,6 +1252,7 @@ class LatvianCalendarParserV3 {
     if (sh !== null && eh !== null) {
       // INTERVĀLU LOĢIKA: Ja abi gali < 8 un nav daypart → abiem +12h
       // Ja start < end < 12 un nav daypart → atstāj AM
+      // D. FIX: "no desmitiem līdz diviem" → beigas kā 14:00, nevis 02:00
       const hasDaypart = /(no rīta|rītos|vakarā|naktī|pusdienlaikā|pēcpusdienā)/i.test(lower);
       
       // Ja abi gali < 8 un nav daypart → abiem +12h (piem., "no diviem līdz četriem" → 14:00–16:00)
@@ -1257,6 +1260,18 @@ class LatvianCalendarParserV3 {
         console.log(`🔍 Interval: both ends < 8 and no daypart → +12h: ${sh}→${sh+12}, ${eh}→${eh+12}`);
         sh = sh + 12;
         eh = eh + 12;
+      }
+      // Ja viens gals < 8 un nav daypart → +12h tikai tam (piem., "no desmitiem līdz diviem" → 10:00–14:00)
+      else if (!hasDaypart) {
+        if (sh >= 1 && sh < 8 && eh >= 8) {
+          // Start < 8, end >= 8 → +12h tikai start
+          console.log(`🔍 Interval: start < 8, end >= 8, no daypart → +12h to start: ${sh}→${sh+12}, ${eh}→${eh}`);
+          sh = sh + 12;
+        } else if (eh >= 1 && eh < 8 && sh >= 8) {
+          // End < 8, start >= 8 → +12h tikai end (piem., "no desmitiem līdz diviem" → 10:00–14:00)
+          console.log(`🔍 Interval: end < 8, start >= 8, no daypart → +12h to end: ${sh}→${sh}, ${eh}→${eh+12}`);
+          eh = eh + 12;
+        }
       }
       // Ja start < end < 12 un nav daypart → atstāj AM (piem., "no desmitiem līdz vienpadsmitiem" → 10:00–11:00)
       else if (sh >= 8 && sh < 12 && eh >= 8 && eh < 12 && sh < eh && !hasDaypart) {
@@ -1345,6 +1360,7 @@ class LatvianCalendarParserV3 {
 
     // 2b. SECOND: Check single hour (pulksten 10, just "10") - but only if no HH:MM found
     // IMPORTANT: Block if this number matches a date day (date-first precedence)
+    // B. FIX: "12." jūk starp dienu un 12:00 - bloķēt, ja tas ir datuma daļa
     if (!timeMatch) {
       const hourMatch = lower.match(/\b(\d{1,2})\b/);
       if (hourMatch) {
@@ -1352,8 +1368,16 @@ class LatvianCalendarParserV3 {
         
         // DATE-FIRST PRECEDENCE: If we have a specific date and this number matches the day, skip it
         // (e.g., "23. decembra" → "23" is the day, not hour 23:00)
+        // (e.g., "12. novembrī" → "12" is the day, not hour 12:00)
+        // B. FIX: Also check if "12." is followed by month name (e.g., "12. novembrī")
+        // Check if "12." is part of a date pattern (12. + month name) - even if not yet parsed as specific_date
+        const isDatePattern = h === 12 && lower.match(/\b12\.\s*(janvār|februār|mart|aprīl|maij|jūnij|jūlij|august|septembr|oktobr|novembr|decembr)/i);
+        
         if (hasSpecificDate && dateDayNumber !== null && h === dateDayNumber) {
           console.log(`🔍 extractTime: blocking hour=${h} (matches date day ${dateDayNumber} - date-first precedence)`);
+          // Skip this match - it's part of the date, not a time
+        } else if (isDatePattern) {
+          console.log(`🔍 extractTime: blocking hour=12 (matches date pattern "12. [month]" - date-first precedence)`);
           // Skip this match - it's part of the date, not a time
         } else if (h >= 0 && h <= 23) {
           // BUSINESS DEFAULT: weekday + meeting activity + early hour (1-7) + no daypart → PM
@@ -1733,19 +1757,45 @@ class LatvianCalendarParserV3 {
     }
 
     // Fix: if start is in past, adjust to next occurrence
+    // C. FIX: Same weekday check un TZ - izmantot pareizo timezone salīdzināšanai
     // Check if it's today (either isToday flag or same weekday)
+    // Use Europe/Riga timezone for date comparison to avoid TZ issues
+    const tz = "Europe/Riga";
+    let startDateInRiga = null;
+    let nowInRiga = null;
+    
+    if (startDate) {
+      const dtf = new Intl.DateTimeFormat("en-GB", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
+      const startParts = dtf.formatToParts(startDate);
+      const startPartsObj = Object.fromEntries(startParts.map(p => [p.type, p.value]));
+      startDateInRiga = {
+        year: parseInt(startPartsObj.year),
+        month: parseInt(startPartsObj.month),
+        day: parseInt(startPartsObj.day)
+      };
+    }
+    
+    const nowDtf = new Intl.DateTimeFormat("en-GB", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
+    const nowParts = nowDtf.formatToParts(now);
+    const nowPartsObj = Object.fromEntries(nowParts.map(p => [p.type, p.value]));
+    nowInRiga = {
+      year: parseInt(nowPartsObj.year),
+      month: parseInt(nowPartsObj.month),
+      day: parseInt(nowPartsObj.day)
+    };
+    
     const isToday = dateInfo.isToday || 
       (dateInfo.type === 'weekday' && 
-       startDate && 
-       startDate.getDate() === now.getDate() && 
-       startDate.getMonth() === now.getMonth() && 
-       startDate.getFullYear() === now.getFullYear());
+       startDateInRiga && 
+       startDateInRiga.day === nowInRiga.day && 
+       startDateInRiga.month === nowInRiga.month && 
+       startDateInRiga.year === nowInRiga.year);
     
-    // Store original time before checking
+    // Store original time before checking (use getHours/getMinutes, not UTC, since setTime already handles TZ)
     const originalHour = startDate ? startDate.getHours() : (timeInfo.hour || 9);
     const originalMinute = startDate ? startDate.getMinutes() : (timeInfo.minute || 0);
     
-    console.log(`🔄 Same weekday check: isToday=${isToday}, type=${dateInfo.type}, startDate=${startDate?.toISOString()}, now=${now.toISOString()}, timePassed=${startDate && startDate < now}`);
+    console.log(`🔄 Same weekday check: isToday=${isToday}, type=${dateInfo.type}, startDate=${startDate?.toISOString()}, now=${now.toISOString()}, timePassed=${startDate && startDate < now}, TZ=${tz}`);
     
     if (isToday && startDate && startDate < now) {
       // If time has passed today, move to next occurrence
@@ -1807,9 +1857,18 @@ class LatvianCalendarParserV3 {
     const hasDaypart = /(no rīta|rītos|vakarā|naktī|pusdienlaikā|pēcpusdienā)/i.test(lower);
     const weekdayEarlyHourWithoutDaypart = isWeekday && isMeetingActivity && isEarlyHour && !hasDaypart;
     
-    // Check if description had time tokens removed
-    const descHadTimeTokensRemoved = /(pulksten|desmitos|divos|trijos|četros|piecos|sešos|septiņos|astoņos|deviņos|vienpadsmitos|divpadsmitos|\d{1,2}[.:]\d{2})/i.test(text) && 
-                                     !/(pulksten|desmitos|divos|trijos|četros|piecos|sešos|septiņos|astoņos|deviņos|vienpadsmitos|divpadsmitos|\d{1,2}[.:]\d{2})/i.test(result.description);
+    // E. FIX: Tokenu tīrītājs - neizmet atslēgvārdus, kas pazemina confidence
+    // "pulksten" ir strukturēts vārds (nav konteksts), tāpēc to var noņemt bez confidence pazemināšanas
+    // Confidence pazemināšana tikai, ja tiek noņemti KONTEKSTU vārdi (weekday, daypart, utt.)
+    const hadStructuredTimeTokens = /(pulksten|desmitos|divos|trijos|četros|piecos|sešos|septiņos|astoņos|deviņos|vienpadsmitos|divpadsmitos|\d{1,2}[.:]\d{2})/i.test(text);
+    const hasStructuredTimeTokensInDesc = /(pulksten|desmitos|divos|trijos|četros|piecos|sešos|septiņos|astoņos|deviņos|vienpadsmitos|divpadsmitos|\d{1,2}[.:]\d{2})/i.test(result.description);
+    // Check if contextual tokens were removed (weekday, daypart, relative date)
+    const hadContextualTokens = /(pirmdien|otrdien|trešdien|ceturtdien|piektdien|sestdien|svētdien|rīt|šodien|parīt|no rīta|vakarā|naktī)/i.test(text);
+    const hasContextualTokensInDesc = /(pirmdien|otrdien|trešdien|ceturtdien|piektdien|sestdien|svētdien|rīt|šodien|parīt|no rīta|vakarā|naktī)/i.test(result.description);
+    
+    // Confidence pazemināšana tikai, ja tiek noņemti KONTEKSTU vārdi (nevis strukturēti laika vārdi)
+    const descHadContextualTokensRemoved = hadContextualTokens && !hasContextualTokensInDesc;
+    const descHadTimeTokensRemoved = hadStructuredTimeTokens && !hasStructuredTimeTokensInDesc;
     
     // Check if absolute date detected but relative path used
     const absoluteDateDetected = dateInfo.type === 'specific_date';
@@ -1821,10 +1880,13 @@ class LatvianCalendarParserV3 {
       confidence -= 0.35;
       console.log(`📊 Confidence adjustment: weekday_early_hour_without_daypart -0.35`);
     }
-    if (descHadTimeTokensRemoved) {
+    // E. FIX: Pazemināt confidence tikai, ja tiek noņemti KONTEKSTU vārdi (nevis strukturēti laika vārdi)
+    if (descHadContextualTokensRemoved) {
       confidence -= 0.25;
-      console.log(`📊 Confidence adjustment: desc_had_time_tokens_removed -0.25`);
+      console.log(`📊 Confidence adjustment: desc_had_contextual_tokens_removed -0.25`);
     }
+    // Strukturētu laika vārdu noņemšana (pulksten, desmitos) nav problēma - tie jau ir start/end laukos
+    // Bet saglabāt flag, lai redzētu, kas tika noņemts
     if (absoluteDateWithRelativePath) {
       confidence -= 0.20;
       console.log(`📊 Confidence adjustment: absolute_date_with_relative_path -0.20`);
@@ -1833,7 +1895,7 @@ class LatvianCalendarParserV3 {
     // Store for later (teacher_agreed will be set in Teacher validate mode)
     result._confidence_before = confidenceBefore;
     result._confidence_after = confidence;
-    result._desc_had_time_tokens_removed = descHadTimeTokensRemoved;
+    result._desc_had_time_tokens_removed = descHadTimeTokensRemoved || descHadContextualTokensRemoved; // Store both for logging
     result._weekday_early_hour_without_daypart = weekdayEarlyHourWithoutDaypart;
     
     // Store am_pm_decision from timeInfo if available
@@ -1913,7 +1975,12 @@ async function parseWithTeacher(text, nowISO, langHint = 'lv') {
   const tmr = new Date(Date.now() + 24 * 3600 * 1000);
   const tomorrowISO = toRigaISO(new Date(tmr.getFullYear(), tmr.getMonth(), tmr.getDate(), 0, 0, 0));
   
-  const teacherPrompt = SYSTEM_PROMPT + `\n\nSVARĒGI: Atgriez TIKAI derīgu JSON objektu pēc shēmas. Nav markdown, nav \`\`\`json\`\`\`, tikai tīrs JSON ar type, lang, description, start, hasTime (vai end calendar gadījumā).\n\nTagadējais datums un laiks: ${nowISO} (Europe/Riga).\nRītdienas datums: ${tomorrowISO}`;
+  // A. FIX: Saglabāt weekday info Teacher promptā
+  // Extract weekday from text if present, to help Teacher preserve it
+  const weekdayMatch = text.match(/\b(pirmdien|otrdien|trešdien|ceturtdien|piektdien|sestdien|svētdien)(a|u|ā)?\b/i);
+  const weekdayHint = weekdayMatch ? `\n\nSVARĒGI: Tekstā ir nedēļas diena "${weekdayMatch[0]}". Saglabā to description laukā!` : '';
+  
+  const teacherPrompt = SYSTEM_PROMPT + `\n\nSVARĒGI: Atgriez TIKAI derīgu JSON objektu pēc shēmas. Nav markdown, nav \`\`\`json\`\`\`, tikai tīrs JSON ar type, lang, description, start, hasTime (vai end calendar gadījumā).\n\nTagadējais datums un laiks: ${nowISO} (Europe/Riga).\nRītdienas datums: ${tomorrowISO}${weekdayHint}`;
   
   try {
     const response = await anthropic.messages.create({
@@ -3182,6 +3249,24 @@ app.post("/ingest-audio", async (req, res) => {
           console.log(`📊 Teacher agreed: no discrepancies, confidence will be boosted +0.15`);
         }
         finalResult = teacherResult;
+        
+        // A. FIX: Saglabāt weekday info no V3, ja Teacher to nav saglabājis
+        // Ja V3 atrada weekday un Teacher description nav weekday, saglabāt V3 weekday info
+        const v3HasWeekday = parsed.description && /(pirmdien|otrdien|trešdien|ceturtdien|piektdien|sestdien|svētdien)/i.test(parsed.description);
+        const teacherHasWeekday = finalResult.description && /(pirmdien|otrdien|trešdien|ceturtdien|piektdien|sestdien|svētdien)/i.test(finalResult.description);
+        if (v3HasWeekday && !teacherHasWeekday) {
+          // Saglabāt weekday no V3 description
+          const weekdayMatch = parsed.description.match(/\b(pirmdien|otrdien|trešdien|ceturtdien|piektdien|sestdien|svētdien)(a|u|ā)?\b/i);
+          if (weekdayMatch) {
+            const weekday = weekdayMatch[0];
+            // Pievienot weekday Teacher description, ja tas nav jau tur
+            if (!finalResult.description.includes(weekday)) {
+              finalResult.description = `${weekday} ${finalResult.description}`.trim();
+              console.log(`🔧 Preserved weekday "${weekday}" from V3 in Teacher result`);
+            }
+          }
+        }
+        
         // Preserve confidence metadata from V3 and apply teacher_agreed boost
         if (parsed._confidence_before) finalResult._confidence_before = parsed._confidence_before;
         if (teacherAgreed && parsed._confidence_after) {
