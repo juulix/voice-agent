@@ -59,6 +59,7 @@ const STRICT_TRIGGERS = (process.env.STRICT_TRIGGERS || 'am_pm,interval,relative
 const DAY_EVENING_DEFAULT = (process.env.DAY_EVENING_DEFAULT || 'on').toLowerCase() === 'on';
 const ABSOLUTE_DATE_FIRST = (process.env.ABSOLUTE_DATE_FIRST || 'on').toLowerCase() === 'on';
 const WEEKDAY_EARLY_PM = (process.env.WEEKDAY_EARLY_PM || 'on').toLowerCase() === 'on';
+const HOUR_DEFAULTS_V1 = (process.env.HOUR_DEFAULTS_V1 || 'on').toLowerCase() === 'on'; // New: 6/7 o'clock policy
 
 // Debug: Log Teacher-Student mode status (after all config is defined)
 console.log(`🔍 Teacher-Student Learning Mode: ${LEARNING_MODE ? 'ON' : 'OFF'}`);
@@ -294,6 +295,25 @@ db.serialize(() => {
     if (!columnNames.includes('confidence_after')) {
       db.run(`ALTER TABLE v3_gold_log ADD COLUMN confidence_after REAL`, (err) => {
         if (err) console.error('❌ Failed to add confidence_after:', err);
+      });
+    }
+    
+    // Telemetrija: hour policy metrics
+    if (!columnNames.includes('hour_7_resolved_to')) {
+      db.run(`ALTER TABLE v3_gold_log ADD COLUMN hour_7_resolved_to TEXT`, (err) => {
+        if (err) console.error('❌ Failed to add hour_7_resolved_to:', err);
+      });
+    }
+    
+    if (!columnNames.includes('hour_6_override')) {
+      db.run(`ALTER TABLE v3_gold_log ADD COLUMN hour_6_override INTEGER DEFAULT 0`, (err) => {
+        if (err) console.error('❌ Failed to add hour_6_override:', err);
+      });
+    }
+    
+    if (!columnNames.includes('marker_detected')) {
+      db.run(`ALTER TABLE v3_gold_log ADD COLUMN marker_detected TEXT`, (err) => {
+        if (err) console.error('❌ Failed to add marker_detected:', err);
       });
     }
   });
@@ -704,8 +724,8 @@ class LatvianCalendarParserV3 {
       const dateInfo = this.extractDate(lower, now);
       if (!dateInfo) return null;
 
-      // 4. Extract time (pass dateInfo for date-first precedence)
-      const timeInfo = this.extractTime(lower, now, dateInfo.baseDate, dateInfo);
+      // 4. Extract time (pass dateInfo and type for date-first precedence and contextual logic)
+      const timeInfo = this.extractTime(lower, now, dateInfo.baseDate, dateInfo, type);
       
       // 5. Extract duration (for calendar events)
       const duration = this.extractDuration(lower);
@@ -1020,7 +1040,7 @@ class LatvianCalendarParserV3 {
     return result;
   }
 
-  extractTime(lower, now, baseDate, dateInfo = null) {
+  extractTime(lower, now, baseDate, dateInfo = null, type = null) {
     const result = {
       hasExplicitTime: false,
       start: null,
@@ -1028,27 +1048,41 @@ class LatvianCalendarParserV3 {
       hour: null,
       minute: 0
     };
-    
+
     // DATE-FIRST PRECEDENCE: Check if we have a specific date with numeric day
     // If dateInfo.type === 'specific_date', block any numeric hour parsing that could conflict
     // (e.g., "23. decembra" should NOT parse "23" as hour)
     const hasSpecificDate = dateInfo && (dateInfo.type === 'specific_date' || dateInfo.day);
     const dateDayNumber = hasSpecificDate ? (dateInfo.day || null) : null;
 
-    // Helper: Apply PM conversion based on day-part context
+    // Helper: Apply PM conversion based on day-part context and HOUR_DEFAULTS_V1 policy
     // Returns: { hour, minute, rolloverDay?, am_pm_decision? }
-    const applyPMConversion = (hour, minute, lower) => {
+    // New signature: needs dateInfo and type for contextual 7 o'clock logic
+    const applyPMConversion = (hour, minute, lower, dateInfo = null, type = null) => {
       const originalHour = hour;
       let amPmDecision = null;
       
-      // Check for evening/night day-parts
-      const eveningNight = /vakarā|vēlu vakarā|naktī|naktīs/.test(lower);
-      // Check for afternoon day-parts
-      const afternoon = /pēcpusdienā|pēc pusdienas|pēcpusdien/.test(lower);
-      // Check for morning/daytime day-parts (keep as AM)
-      // "rīta" = "no rīta" (genitive form)
-      // "rīt" = "tomorrow" (also typically morning context)
-      const morning = /no rīta|rītos|rīta|agrā rīta|agri no rīta|pusdienlaikā|pusdienās|pusdienlaiks|^rīt\b|\brīt\b/.test(lower);
+      // Lexicon for context detection
+      const morningMarkers = /no rīta|rītos|rīta|agrā rīta|agri no rīta|brokast/i;
+      const eveningMarkers = /vakarā|vēlu vakarā|vakariņas|vakariņu/i;
+      const nightMarkers = /naktī|naktīs/i;
+      const afternoonMarkers = /pēcpusdienā|pēc pusdienas|pēcpusdien/i;
+      const businessWords = /sapulce|tikšanās|klients|banka|ārsts|vizīte|prezentācija|meeting|konference/i;
+      const leisureWords = /kino|vakariņas|restorān|koncert|dzimšanas diena|ballīte|svētki/i;
+      
+      // Check for day-part markers (HIGHEST PRIORITY - step 0)
+      const hasMorningMarker = morningMarkers.test(lower);
+      const hasEveningMarker = eveningMarkers.test(lower);
+      const hasNightMarker = nightMarkers.test(lower);
+      const hasAfternoonMarker = afternoonMarkers.test(lower);
+      
+      // Check for relative date words
+      const hasRīt = /\brīt\b/i.test(lower) && !hasMorningMarker; // "rīt" without "no rīta"
+      const hasŠodien = /\bšodien\b/i.test(lower);
+      
+      // Check for intent type (reminder vs calendar)
+      const isReminder = type === 'reminder' || /atgādin/i.test(lower);
+      const isCalendar = type === 'calendar' || /tikšanās|sapulce|meeting/i.test(lower);
       
       // Validate hour is in valid range
       if (hour < 0 || hour > 23) {
@@ -1056,97 +1090,174 @@ class LatvianCalendarParserV3 {
         return { hour, minute, am_pm_decision: 'invalid' };
       }
       
-      // IMPORTANT: Evening/night OVERRIDE morning (e.g., "rīt sešos vakarā" → 18:00, not 06:00)
-      // If evening/night context is present, it takes precedence over morning
-      if (eveningNight && hour >= 1 && hour < 12) {
+      // STEP 0: Markers override everything (highest priority)
+      if (hasNightMarker && hour >= 1 && hour < 12) {
         const newHour = hour + 12;
-        amPmDecision = 'evening_override';
-        console.log(`🔍 PM conversion: evening/night OVERRIDE - ${hour} → ${newHour} (${hour} PM, evening > morning)`);
-        return { hour: newHour, minute, am_pm_decision: amPmDecision };
+        amPmDecision = 'night_marker_override';
+        telemetry.marker_detected = 'night';
+        if (hour === 7) telemetry.hour_7_resolved_to = 'PM';
+        console.log(`🔍 PM conversion: night marker OVERRIDE - ${hour} → ${newHour} (${hour} PM)`);
+        return { hour: newHour, minute, am_pm_decision: amPmDecision, telemetry };
       }
       
-        // If morning/daytime (and no evening override), keep hour as is (AM)
-      if (morning && !eveningNight) {
-        const hourLabel = hour === 12 ? 'noon' : hour === 0 ? 'midnight' : 'AM';
-        amPmDecision = hour === 12 ? 'noon' : 'morning_keep';
-        console.log(`🔍 PM conversion: morning context detected, keeping hour=${hour} (${hourLabel})`);
-        return { hour, minute, am_pm_decision: amPmDecision };
-      }
-      
-      // Edge case: "divpadsmitos vakarā" → midnight (00:00 next day)
-      if (eveningNight && hour === 12) {
-        amPmDecision = 'midnight_rollover';
-        console.log(`🔍 PM conversion: 12 vakarā → midnight (00:00 next day)`);
-        return { hour: 0, minute, rolloverDay: true, am_pm_decision: amPmDecision };
-      }
-      
-      // Apply PM conversion for afternoon (1-11 PM) - but only if no morning override
-      if (afternoon && hour >= 1 && hour < 12 && !morning) {
+      if (hasEveningMarker && hour >= 1 && hour < 12) {
         const newHour = hour + 12;
-        amPmDecision = 'afternoon_pm';
-        console.log(`🔍 PM conversion: afternoon context - ${hour} → ${newHour} (${hour} PM)`);
-        return { hour: newHour, minute, am_pm_decision: amPmDecision };
+        amPmDecision = 'evening_marker_override';
+        telemetry.marker_detected = 'evening';
+        if (hour === 7) telemetry.hour_7_resolved_to = 'PM';
+        console.log(`🔍 PM conversion: evening marker OVERRIDE - ${hour} → ${newHour} (${hour} PM)`);
+        return { hour: newHour, minute, am_pm_decision: amPmDecision, telemetry };
       }
       
-      // DIENAS/VAKARA PRIORITĀTE: Ja nav "no rīta" un nav "naktī", pieņem dienu/vakaru
-      // Feature flag: DAY_EVENING_DEFAULT
-      // B. FIX: "pulksten divos" bez daypart → 14:00 (dienā), nevis 02:00 (AM)
-      if (DAY_EVENING_DEFAULT && !morning && !eveningNight && !afternoon) {
-        const hasNoMorning = !/no rīta|rītos|rīta|agrā rīta|agri no rīta/.test(lower);
-        const hasNoNight = !/naktī|naktīs/.test(lower);
+      if (hasAfternoonMarker && hour >= 1 && hour < 12) {
+        const newHour = hour + 12;
+        amPmDecision = 'afternoon_marker_override';
+        telemetry.marker_detected = 'afternoon';
+        if (hour === 7) telemetry.hour_7_resolved_to = 'PM';
+        console.log(`🔍 PM conversion: afternoon marker - ${hour} → ${newHour} (${hour} PM)`);
+        return { hour: newHour, minute, am_pm_decision: amPmDecision, telemetry };
+      }
+      
+      if (hasMorningMarker) {
+        telemetry.marker_detected = 'morning';
+        // Morning marker: 1-11 stay AM, 6 and 7 become 06:00/07:00
+        if (hour === 6) {
+          amPmDecision = 'morning_marker_6am';
+          telemetry.hour_6_override = true; // 6 → 06:00 (override default 18:00)
+          console.log(`🔍 PM conversion: morning marker - 6 → 06:00 (AM)`);
+          return { hour: 6, minute, am_pm_decision: amPmDecision, telemetry };
+        }
+        if (hour === 7) {
+          amPmDecision = 'morning_marker_7am';
+          telemetry.hour_7_resolved_to = 'AM';
+          console.log(`🔍 PM conversion: morning marker - 7 → 07:00 (AM)`);
+          return { hour: 7, minute, am_pm_decision: amPmDecision, telemetry };
+        }
+        // Other hours stay AM
+        amPmDecision = 'morning_marker_keep_am';
+        console.log(`🔍 PM conversion: morning marker - keeping ${hour} (AM)`);
+        return { hour, minute, am_pm_decision: amPmDecision, telemetry };
+      }
+      
+      // No markers detected
+      telemetry.marker_detected = 'none';
+      
+      // STEP 1: Apply HOUR_DEFAULTS_V1 policy (if enabled and no markers)
+      if (HOUR_DEFAULTS_V1 && !hasMorningMarker && !hasEveningMarker && !hasNightMarker && !hasAfternoonMarker) {
+        // 1.1. Hours 1-6 → 13:00-18:00 (day/evening default)
+        if (hour >= 1 && hour <= 6) {
+          const newHour = hour + 12;
+          amPmDecision = 'hour_defaults_v1_1to6_pm';
+          // Note: hour 6 default is 18:00, so hour_6_override = false
+          console.log(`🔍 PM conversion: HOUR_DEFAULTS_V1 - ${hour} → ${newHour} (${hour} PM, day/evening default)`);
+          return { hour: newHour, minute, am_pm_decision: amPmDecision, telemetry };
+        }
         
-        // Ja nav "no rīta" un nav "naktī" → pieņem dienu/vakaru
-        // "pulksten" nav daypart, tāpēc tas netraucē šai loģikai
+        // 1.2. Hour 7 → contextual (special case)
+        if (hour === 7) {
+          // Rule 1: "rīt septiņos" → 07:00
+          if (hasRīt) {
+            amPmDecision = 'hour_defaults_v1_7_rīt_am';
+            telemetry.hour_7_resolved_to = 'AM';
+            console.log(`🔍 PM conversion: HOUR_DEFAULTS_V1 - 7 → 07:00 (AM, "rīt" context)`);
+            return { hour: 7, minute, am_pm_decision: amPmDecision, telemetry };
+          }
+          
+          // Rule 2: "šodien septiņos" → 19:00 (if no morning marker)
+          if (hasŠodien && !hasMorningMarker) {
+            amPmDecision = 'hour_defaults_v1_7_šodien_pm';
+            telemetry.hour_7_resolved_to = 'PM';
+            console.log(`🔍 PM conversion: HOUR_DEFAULTS_V1 - 7 → 19:00 (PM, "šodien" context)`);
+            return { hour: 19, minute, am_pm_decision: amPmDecision, telemetry };
+          }
+          
+          // Rule 3: Business words without "no rīta" → 07:00 (business meetings rarely at 19:00)
+          if (businessWords.test(lower) && !hasMorningMarker) {
+            amPmDecision = 'hour_defaults_v1_7_business_am';
+            telemetry.hour_7_resolved_to = 'AM';
+            console.log(`🔍 PM conversion: HOUR_DEFAULTS_V1 - 7 → 07:00 (AM, business context)`);
+            return { hour: 7, minute, am_pm_decision: amPmDecision, telemetry };
+          }
+          
+          // Rule 4: Leisure words → 19:00
+          if (leisureWords.test(lower)) {
+            amPmDecision = 'hour_defaults_v1_7_leisure_pm';
+            telemetry.hour_7_resolved_to = 'PM';
+            console.log(`🔍 PM conversion: HOUR_DEFAULTS_V1 - 7 → 19:00 (PM, leisure context)`);
+            return { hour: 19, minute, am_pm_decision: amPmDecision, telemetry };
+          }
+          
+          // Rule 5: Reminder intent → 07:00 (reminders often set for morning)
+          if (isReminder) {
+            amPmDecision = 'hour_defaults_v1_7_reminder_am';
+            telemetry.hour_7_resolved_to = 'AM';
+            console.log(`🔍 PM conversion: HOUR_DEFAULTS_V1 - 7 → 07:00 (AM, reminder intent)`);
+            return { hour: 7, minute, am_pm_decision: amPmDecision, telemetry };
+          }
+          
+          // Rule 6: Calendar with business context → 07:00
+          if (isCalendar && businessWords.test(lower)) {
+            amPmDecision = 'hour_defaults_v1_7_calendar_business_am';
+            telemetry.hour_7_resolved_to = 'AM';
+            console.log(`🔍 PM conversion: HOUR_DEFAULTS_V1 - 7 → 07:00 (AM, calendar business)`);
+            return { hour: 7, minute, am_pm_decision: amPmDecision, telemetry };
+          }
+          
+          // Default for hour 7: if no context, prefer AM (safer)
+          amPmDecision = 'hour_defaults_v1_7_default_am';
+          telemetry.hour_7_resolved_to = 'AM';
+          console.log(`🔍 PM conversion: HOUR_DEFAULTS_V1 - 7 → 07:00 (AM, default)`);
+          return { hour: 7, minute, am_pm_decision: amPmDecision, telemetry };
+        }
+        
+        // 1.3. Hours 8-11 → AM (08:00-11:00)
+        if (hour >= 8 && hour < 12) {
+          amPmDecision = 'hour_defaults_v1_8to11_am';
+          console.log(`🔍 PM conversion: HOUR_DEFAULTS_V1 - keeping ${hour} (AM, day time)`);
+          return { hour, minute, am_pm_decision: amPmDecision, telemetry };
+        }
+        
+        // 1.4. Hour 12 → 12:00 (noon)
+        if (hour === 12) {
+          amPmDecision = 'hour_defaults_v1_12_noon';
+          console.log(`🔍 PM conversion: HOUR_DEFAULTS_V1 - 12 → 12:00 (noon)`);
+          return { hour: 12, minute, am_pm_decision: amPmDecision, telemetry };
+        }
+      }
+      
+      // STEP 2: Fallback to old DAY_EVENING_DEFAULT logic (if HOUR_DEFAULTS_V1 is off)
+      if (!HOUR_DEFAULTS_V1 && DAY_EVENING_DEFAULT && !hasMorningMarker && !hasEveningMarker && !hasNightMarker && !hasAfternoonMarker) {
+        const hasNoMorning = !morningMarkers.test(lower);
+        const hasNoNight = !nightMarkers.test(lower);
+        
         if (hasNoMorning && hasNoNight) {
-          // Stundas 1-7 → +12h (dienā/vakarā) - "pulksten divos" → 14:00
           if (hour >= 1 && hour <= 7) {
             const newHour = hour + 12;
             amPmDecision = 'day_evening_default_pm';
-            console.log(`🔍 PM conversion: day/evening default (no morning/no night) - ${hour} → ${newHour} (${hour} PM, e.g., "pulksten ${hour}" → ${newHour}:00)`);
+            console.log(`🔍 PM conversion: day/evening default (legacy) - ${hour} → ${newHour} (${hour} PM)`);
             return { hour: newHour, minute, am_pm_decision: amPmDecision };
           }
-          // Stundas 8-11 → atstāj AM (dienā)
           if (hour >= 8 && hour < 12) {
             amPmDecision = 'day_evening_default_am';
-            console.log(`🔍 PM conversion: day/evening default - keeping ${hour} (AM, day time)`);
+            console.log(`🔍 PM conversion: day/evening default (legacy) - keeping ${hour} (AM)`);
             return { hour, minute, am_pm_decision: amPmDecision };
           }
         }
       }
       
-      // IMPORTANT: Only convert to PM if there's EXPLICIT evening/afternoon context
-      // Default to AM if no explicit context (safer assumption)
-      // Exception: hours 0-6 are typically AM (night/early morning)
-      // Exception: hour 12 is noon (12:00), not midnight
-      
-      // For hours 1-11, only apply PM if there's explicit evening/afternoon context
-      // No automatic PM conversion without explicit context
-      if (!morning && hour >= 1 && hour < 12) {
-        const isNightContext = /naktī|naktīs|agrā rīta|agri no rīta/.test(lower);
-        if ((eveningNight || afternoon) && !isNightContext) {
-          // Explicit evening/afternoon context → PM
-          const newHour = hour + 12;
-          amPmDecision = 'explicit_evening_afternoon';
-          console.log(`🔍 PM conversion: explicit evening/afternoon context - ${hour} → ${newHour} (${hour} PM)`);
-          return { hour: newHour, minute, am_pm_decision: amPmDecision };
-        }
-        // No explicit context → keep as AM (default)
-        amPmDecision = 'no_context_keep_am';
-        console.log(`🔍 PM conversion: no explicit evening/afternoon context, keeping hour=${hour} (AM)`);
+      // STEP 3: Edge cases
+      // "divpadsmitos vakarā" → midnight (00:00 next day)
+      if (hasEveningMarker && hour === 12) {
+        amPmDecision = 'midnight_rollover';
+        console.log(`🔍 PM conversion: 12 vakarā → midnight (00:00 next day)`);
+        return { hour: 0, minute, rolloverDay: true, am_pm_decision: amPmDecision };
       }
       
-      // Handle 12:00 (noon) - special case
-      if (hour === 12) {
-        amPmDecision = 'noon';
-        console.log(`🔍 PM conversion: 12:00 (noon) - keeping as 12:00 dienā`);
-        return { hour: 12, minute, am_pm_decision: amPmDecision };
-      }
-      
-      // Default: keep hour as is (AM or already 24h format)
-      const hourLabel = hour === 0 ? 'midnight' : hour < 12 ? 'AM' : '24h';
-      amPmDecision = hour === 0 ? 'midnight' : hour < 12 ? 'default_am' : 'default_24h';
+      // STEP 4: Default - keep hour as is
+      const hourLabel = hour === 0 ? 'midnight' : hour === 12 ? 'noon' : hour < 12 ? 'AM' : '24h';
+      amPmDecision = hour === 0 ? 'midnight' : hour === 12 ? 'noon' : hour < 12 ? 'default_am' : 'default_24h';
       console.log(`🔍 PM conversion: default - keeping hour=${hour} (${hourLabel})`);
-      return { hour, minute, am_pm_decision: amPmDecision };
+      return { hour, minute, am_pm_decision: amPmDecision, telemetry };
     };
 
     // 0. FIRST: Check dynamic relative time patterns (pēc X minūtēm/stundām) - HIGHEST priority
@@ -1280,11 +1391,12 @@ class LatvianCalendarParserV3 {
       }
       
       // Apply PM conversion to interval times
-      const startConverted = applyPMConversion(sh, sm, lower);
-      const endConverted = applyPMConversion(eh, em, lower);
+      const startConverted = applyPMConversion(sh, sm, lower, dateInfo, type);
+      const endConverted = applyPMConversion(eh, em, lower, dateInfo, type);
       
-      // Store am_pm_decision (use start's decision)
+      // Store am_pm_decision and telemetry (use start's decision/telemetry)
       result._am_pm_decision = startConverted.am_pm_decision || endConverted.am_pm_decision || null;
+      result._telemetry = startConverted.telemetry || endConverted.telemetry || null;
       
       let startDate = this.setTime(baseDate, startConverted.hour, startConverted.minute);
       let endDate = this.setTime(baseDate, endConverted.hour, endConverted.minute);
@@ -1306,7 +1418,8 @@ class LatvianCalendarParserV3 {
         hour: startConverted.hour,
         minute: startConverted.minute,
         isInterval: true,
-        _am_pm_decision: result._am_pm_decision
+        _am_pm_decision: result._am_pm_decision,
+        _telemetry: result._telemetry
       };
     }
 
@@ -1333,15 +1446,16 @@ class LatvianCalendarParserV3 {
         }
         
         // Apply PM conversion based on day-part context
-        const converted = applyPMConversion(h, m, lower);
+        const converted = applyPMConversion(h, m, lower, dateInfo, type);
         h = converted.hour;
         
-        // Store am_pm_decision
-        if (businessDefaultAppliedNum) {
-          result._am_pm_decision = 'business_default_pm';
-        } else {
-          result._am_pm_decision = converted.am_pm_decision || null;
-        }
+          // Store am_pm_decision and telemetry
+          if (businessDefaultAppliedNum) {
+            result._am_pm_decision = 'business_default_pm';
+          } else {
+            result._am_pm_decision = converted.am_pm_decision || null;
+          }
+          result._telemetry = converted.telemetry || null;
         
         let startDate = this.setTime(baseDate, h, converted.minute);
         // Handle day rollover for midnight
@@ -1396,15 +1510,16 @@ class LatvianCalendarParserV3 {
           }
           
           // Apply PM conversion based on day-part context
-          const converted = applyPMConversion(h, 0, lower);
+          const converted = applyPMConversion(h, 0, lower, dateInfo, type);
           h = converted.hour;
           
-          // Store am_pm_decision
+          // Store am_pm_decision and telemetry
           if (businessDefaultAppliedSingle) {
             result._am_pm_decision = 'business_default_pm';
           } else {
             result._am_pm_decision = converted.am_pm_decision || null;
           }
+          result._telemetry = converted.telemetry || null;
           
           let startDate = this.setTime(baseDate, h, 0);
           // Handle day rollover for midnight
@@ -1454,19 +1569,20 @@ class LatvianCalendarParserV3 {
         }
       
       // Apply PM conversion based on day-part context
-      const converted = applyPMConversion(h, m, lower);
-        const originalH = h;
+      const converted = applyPMConversion(h, m, lower, dateInfo, type);
+      const originalH = h;
       h = converted.hour;
       m = converted.minute;
       
-        // Store am_pm_decision (override with business_default if applied)
-        if (businessDefaultApplied) {
-          result._am_pm_decision = 'business_default_pm';
-        } else {
-          result._am_pm_decision = converted.am_pm_decision || null;
-        }
-        
-        console.log(`🔍 PM conversion: original=${originalH}, context="${lower}", after=${h}, rolloverDay=${converted.rolloverDay || false}, am_pm_decision=${result._am_pm_decision}`);
+      // Store am_pm_decision and telemetry (override with business_default if applied)
+      if (businessDefaultApplied) {
+        result._am_pm_decision = 'business_default_pm';
+      } else {
+        result._am_pm_decision = converted.am_pm_decision || null;
+      }
+      result._telemetry = converted.telemetry || null;
+      
+      console.log(`🔍 PM conversion: original=${originalH}, context="${lower}", after=${h}, rolloverDay=${converted.rolloverDay || false}, am_pm_decision=${result._am_pm_decision}`);
       
       let startDate = this.setTime(baseDate, h, m);
       // Handle day rollover for midnight
@@ -1832,9 +1948,9 @@ class LatvianCalendarParserV3 {
     cleanDescription = cleanDescription.replace(/\s+([.,;:])\s+/g, ' '); // punctuation between words
     cleanDescription = cleanDescription.replace(/\s+/g, ' ').trim(); // final cleanup
     
-      // If description is empty after cleaning, use original text
-      if (!cleanDescription || cleanDescription.length < 3) {
-        cleanDescription = text;
+    // If description is empty after cleaning, use original text
+    if (!cleanDescription || cleanDescription.length < 3) {
+      cleanDescription = text;
       }
     }
     
@@ -1997,7 +2113,7 @@ class LatvianCalendarParserV3 {
     if (/(tikšanās|sapulce|atgādini|reminder|meeting)/i.test(lower)) {
       confidence += 0.03;
     }
-    
+
     // Store confidence BEFORE re-kalibrācija (pēc visiem boostiem, bet pirms plauzibilitātes pielāgojumiem)
     const confidenceBefore = confidence;
 
@@ -2049,9 +2165,12 @@ class LatvianCalendarParserV3 {
     result._desc_had_time_tokens_removed = descHadTimeTokensRemoved || descHadContextualTokensRemoved; // Store both for logging
     result._weekday_early_hour_without_daypart = weekdayEarlyHourWithoutDaypart;
     
-    // Store am_pm_decision from timeInfo if available
+    // Store am_pm_decision and telemetry from timeInfo if available
     if (timeInfo && timeInfo._am_pm_decision) {
       result._am_pm_decision = timeInfo._am_pm_decision;
+    }
+    if (timeInfo && timeInfo._telemetry) {
+      result._telemetry = timeInfo._telemetry;
     }
 
     // Cap at 0.95, min at 0.1
@@ -2105,6 +2224,9 @@ class LatvianCalendarParserV3 {
 
 // Export singleton instance
 const parserV3 = new LatvianCalendarParserV3();
+
+// Export class for testing
+export { LatvianCalendarParserV3 };
 
 /**
  * Parse Latvian calendar/reminder text using Parser V3
@@ -2299,8 +2421,8 @@ function saveGoldLog(entry) {
   return new Promise((resolve, reject) => {
     db.run(
       `INSERT INTO v3_gold_log 
-       (ts, user_id, session_id, asr_text, normalized_text, v3_result, teacher_result, decision, discrepancies, used_triggers, latency_ms, severity, am_pm_decision, desc_had_time_tokens_removed, confidence_before, confidence_after)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (ts, user_id, session_id, asr_text, normalized_text, v3_result, teacher_result, decision, discrepancies, used_triggers, latency_ms, severity, am_pm_decision, desc_had_time_tokens_removed, confidence_before, confidence_after, hour_7_resolved_to, hour_6_override, marker_detected)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         entry.ts || new Date().toISOString(),
         entry.user_id || null,
@@ -2317,7 +2439,11 @@ function saveGoldLog(entry) {
         entry.am_pm_decision || null,
         entry.desc_had_time_tokens_removed ? 1 : 0,
         entry.confidence_before || null,
-        entry.confidence_after || null
+        entry.confidence_after || null,
+        // Telemetrija: hour policy metrics
+        entry.telemetry?.hour_7_resolved_to || null,
+        entry.telemetry?.hour_6_override ? 1 : 0,
+        entry.telemetry?.marker_detected || null
       ],
       function(err) {
         if (err) {
@@ -3354,7 +3480,8 @@ app.post("/ingest-audio", async (req, res) => {
             am_pm_decision: parsed._am_pm_decision || null,
             desc_had_time_tokens_removed: parsed._desc_had_time_tokens_removed || false,
             confidence_before: parsed._confidence_before || null,
-            confidence_after: parsed._confidence_after || parsed.confidence || null
+            confidence_after: parsed._confidence_after || parsed.confidence || null,
+            telemetry: parsed._telemetry || null
           });
           console.log(`📊 Gold log saved (decision: ${decision})`);
         } catch (logError) {
@@ -3381,7 +3508,8 @@ app.post("/ingest-audio", async (req, res) => {
             am_pm_decision: parsed._am_pm_decision || null,
             desc_had_time_tokens_removed: parsed._desc_had_time_tokens_removed || false,
             confidence_before: parsed._confidence_before || null,
-            confidence_after: parsed._confidence_after || parsed.confidence || null
+            confidence_after: parsed._confidence_after || parsed.confidence || null,
+            telemetry: parsed._telemetry || null
           });
         } catch (logError) {
           // Ignore log errors
@@ -3635,7 +3763,8 @@ Atgriez TIKAI uzlaboto tekstu, bez skaidrojumiem.`;
             am_pm_decision: parsed._am_pm_decision || null,
             desc_had_time_tokens_removed: parsed._desc_had_time_tokens_removed || false,
             confidence_before: parsed._confidence_before || null,
-            confidence_after: parsed._confidence_after || parsed.confidence || null
+            confidence_after: parsed._confidence_after || parsed.confidence || null,
+            telemetry: parsed._telemetry || null
           });
         } catch (logError) {
           // Ignore
