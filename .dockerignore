@@ -54,9 +54,11 @@ test-*.md
 *.spec.js
 coverage/
 .nyc_output/
+tests/  # Test directory (organized)
 
 # Documentation (nav nepieciešami production - bet README var būt noderīgs)
 *.md
+docs/  # Documentation directory (organized)
 
 # Temporary files
 tmp/
