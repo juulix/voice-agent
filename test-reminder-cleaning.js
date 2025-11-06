@@ -175,10 +175,5 @@ function runTests(parser) {
   }
 }
 
-// Run if executed directly
-if (require.main === module) {
-  runTests();
-}
-
 export { testCases, edgeCases, runTests };
 
