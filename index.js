@@ -403,6 +403,20 @@ async function parseWithGPT41(text, requestId, nowISO, langHint = 'lv') {
   
   const systemPrompt = `Tu esi balss asistents latviešu valodai. Pārvērš lietotāja runu JSON formātā.
 
+**SVARĪGI: WHISPER KĻŪDU LABOŠANA**
+
+Whisper transkripcija var saturēt kļūdas. Tava pirmā prioritāte ir saprast lietotāja nodomu un labot acīmredzamas kļūdas:
+
+- "divdesmit sastajā" → saprot kā "divdesmit sestajā" (26.)
+- "pulkstenis" → saprot kā "pulksten"
+- "reit" / "rit" → saprot kā "rīt"
+- Loģiski interpretē teikumu kontekstu, nevis burtiski seko kļūdainajam tekstam
+
+Piemērs:
+Input: "Divdesmit sastajā novembrī sapulce Limbažos" (Whisper kļūda!)
+Tavs uzdevums: Saprast ka "sastajā" ir "sestajā" → 26. novembris
+Output: {"type": "calendar", "description": "Sapulce Limbažos", "start": "2025-11-26T14:00:00+02:00", ..., "corrected_input": "Divdesmit sestajā novembrī sapulce Limbažos"}
+
 ŠODIENAS KONTEKSTS:
 - Datums: ${today}
 - Rīt: ${tomorrowDate}
@@ -414,6 +428,7 @@ KRITISKAS PRASĪBAS:
 1. Atbildē TIKAI JSON - bez markdown (\`\`\`), bez teksta
 2. Viena darbība: reminder VAI calendar VAI shopping
 3. Izmanto TIKAI šo JSON struktūru (nekādu papildu lauku)
+4. LABO Whisper kļūdas, izmantojot konteksta izpratni
 
 JSON FORMĀTS:
 {
@@ -423,7 +438,8 @@ JSON FORMĀTS:
   "end": "YYYY-MM-DDTHH:mm:ss+02:00" | null,
   "hasTime": true | false,
   "items": "saraksts" | null,
-  "lang": "lv"
+  "lang": "lv",
+  "corrected_input": "labotais teksts ja bija kļūdas" | null
 }
 
 LATVIEŠU LAIKA LOĢIKA:
@@ -439,40 +455,19 @@ AM/PM KONVERSIJA:
 - plkst 8-11 → AM (keep 08:00-11:00)
 - plkst 12+ → keep as-is
 
-DATUMU SAPRATNE:
+DATUMU SAPRATNE (SVARĪGI!):
 - "divdesmit sestajā novembrī" = 26. novembris (NE 10:20!)
 - "20. novembrī plkst 14" = 20. novembris 14:00 (NE 02:00!)
-- Ordinal skaitļi (sestajā, divdesmitajā) = datumi, NE laiki
+- Ordinal skaitļi (sestajā, divdesmitajā, trīsdesmitajā) = datumi, NE laiki
+- Ja dzirdi "desmit" vārda saliktenē ar citiem skaitļiem → tas ir datums!
 
 CALENDAR NOTIKUMI:
 - Vienmēr pievieno end laiku (+1 stunda no start)
 - Ja nav laika → hasTime=false, bet joprojām set default time 14:00
 
-PIEMĒRI:
+PIEMĒRI AR KĻŪDU LABOŠANU:
 
-Input: "atgādini man rīt plkst 9"
-{
-  "type": "reminder",
-  "description": "Atgādinājums",
-  "start": "${tomorrowDate}T09:00:00+02:00",
-  "end": null,
-  "hasTime": true,
-  "items": null,
-  "lang": "lv"
-}
-
-Input: "sapulce pirmdien plkst 2"
-{
-  "type": "calendar",
-  "description": "Sapulce",
-  "start": "2025-11-11T14:00:00+02:00",
-  "end": "2025-11-11T15:00:00+02:00",
-  "hasTime": true,
-  "items": null,
-  "lang": "lv"
-}
-
-Input: "divdesmit sestajā novembrī sapulce Limbažos"
+Input: "Divdesmit sastajā novembrī sapulce Limbažos" (KĻŪDA: "sastajā")
 {
   "type": "calendar",
   "description": "Sapulce Limbažos",
@@ -480,7 +475,32 @@ Input: "divdesmit sestajā novembrī sapulce Limbažos"
   "end": "2025-11-26T15:00:00+02:00",
   "hasTime": false,
   "items": null,
-  "lang": "lv"
+  "lang": "lv",
+  "corrected_input": "Divdesmit sestajā novembrī sapulce Limbažos"
+}
+
+Input: "reit plkstenis 9 atgādini man" (KĻŪDAS: "reit", "plkstenis")
+{
+  "type": "reminder",
+  "description": "Atgādinājums",
+  "start": "${tomorrowDate}T09:00:00+02:00",
+  "end": null,
+  "hasTime": true,
+  "items": null,
+  "lang": "lv",
+  "corrected_input": "rīt pulksten 9 atgādini man"
+}
+
+Input: "atgādini man rīt plkst 9" (NAV KĻŪDU)
+{
+  "type": "reminder",
+  "description": "Atgādinājums",
+  "start": "${tomorrowDate}T09:00:00+02:00",
+  "end": null,
+  "hasTime": true,
+  "items": null,
+  "lang": "lv",
+  "corrected_input": null
 }
 
 Input: "20. novembrī pulksten 14 budžeta izskatīšana"
@@ -491,7 +511,8 @@ Input: "20. novembrī pulksten 14 budžeta izskatīšana"
   "end": "2025-11-20T15:00:00+02:00",
   "hasTime": true,
   "items": null,
-  "lang": "lv"
+  "lang": "lv",
+  "corrected_input": null
 }
 
 Input: "pievieno piens, maize, olas"
@@ -502,7 +523,8 @@ Input: "pievieno piens, maize, olas"
   "end": null,
   "hasTime": false,
   "items": "piens, maize, olas",
-  "lang": "lv"
+  "lang": "lv",
+  "corrected_input": null
 }
 
 ATBILDĒ TIKAI JSON! Nekādu markdown, nekādu papildu tekstu.`;
@@ -535,6 +557,7 @@ ATBILDĒ TIKAI JSON! Nekādu markdown, nekādu papildu tekstu.`;
       hasTime: parsed.hasTime,
       items: parsed.items,
       lang: parsed.lang || 'lv',
+      corrected_input: parsed.corrected_input || null, // NEW: Show if GPT corrected anything
       raw_transcript: text,
       normalized_transcript: text,
       confidence: 0.95,
@@ -1225,16 +1248,30 @@ app.post("/ingest-audio", async (req, res) => {
     }
 
     // Parse with GPT-4.1-mini (NEW - replaces all V3 logic)
-    console.log(`📊 [${req.requestId}] === FLOW ===`);
-    console.log(`🎤 Whisper: "${norm}"`);
+    console.log(`📊 [${req.requestId}] === TRANSCRIPT FLOW ===`);
+    console.log(`🎤 [1] Whisper Raw:    "${raw}"`);
+    console.log(`🔧 [2] Normalized:     "${norm}"`);
     
     let parsed;
     try {
       parsed = await parseWithGPT41(norm, req.requestId, nowISO, langHint);
-      console.log(`🤖 GPT-4.1-mini: type=${parsed.type}, start=${parsed.start || 'null'}`);
+      
+      // Show if GPT corrected anything
+      if (parsed.corrected_input) {
+        console.log(`🤖 [3] GPT Corrected:  "${parsed.corrected_input}" (fixed Whisper errors)`);
+      } else {
+        console.log(`🤖 [3] GPT Analysis:   No corrections needed`);
+      }
+      
+      console.log(`📤 [4] Final Result:   type=${parsed.type}, desc="${parsed.description}"`);
+      if (parsed.start) {
+        console.log(`   └─ Time: ${parsed.start}${parsed.end ? ' → ' + parsed.end : ''}`);
+      }
       console.log(`✅ Duration: ${Date.now() - processingStart}ms`);
+      console.log(`📊 [${req.requestId}] ========================\n`);
+      
     } catch (error) {
-      console.error(`[${req.requestId}] GPT parsing failed:`, error);
+      console.error(`❌ [${req.requestId}] GPT parsing failed:`, error);
       return res.status(500).json({
         error: "parsing_failed",
         message: error.message,
