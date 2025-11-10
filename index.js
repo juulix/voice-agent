@@ -414,8 +414,9 @@ Datums: ${today}, Rīt: ${tomorrowDate}, Laiks: ${currentTime}, Diena: ${current
 
 PRASĪBAS:
 1. Atbildē TIKAI JSON - bez markdown, bez teksta
-2. Viena darbība: reminder VAI calendar VAI shopping
-3. JSON: {type, description, start, end, hasTime, items, lang, corrected_input}
+2. Viena VAI vairākas darbības: reminder VAI calendar VAI shopping
+3. Ja VIENA darbība: JSON: {type, description, start, end, hasTime, items, lang, corrected_input}
+4. Ja VAIRĀKAS darbības: JSON: {type:"multiple", tasks:[{type, description, start, end, hasTime, items, lang}, ...]}
 
 LAIKA LOĢIKA:
 - "rīt"=${tomorrowDate}, "šodien"=${today}, "pirmdien/otrdien/utt"=nākamā diena
@@ -441,7 +442,18 @@ Input: "20. novembrī pulksten 14 budžeta izskatīšana"
 {"type":"calendar","description":"Budžeta izskatīšana","start":"2025-11-20T14:00:00+02:00","end":"2025-11-20T15:00:00+02:00","hasTime":true,"items":null,"lang":"lv","corrected_input":null}
 
 Input: "pievieno piens, maize, olas"
-{"type":"shopping","description":"Pirkumi","start":null,"end":null,"hasTime":false,"items":"piens, maize, olas","lang":"lv","corrected_input":null}`;
+{"type":"shopping","description":"Pirkumi","start":null,"end":null,"hasTime":false,"items":"piens, maize, olas","lang":"lv","corrected_input":null}
+
+VAIRĀKU DARBĪBU PIEMĒRI:
+
+Input: "uztaisi trīs atgādinājumus: rīt plkst 9, pirmdien plkst 14, trešdien plkst 18"
+{"type":"multiple","tasks":[{"type":"reminder","description":"Atgādinājums","start":"${tomorrowDate}T09:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"},{"type":"reminder","description":"Atgādinājums","start":"2025-01-XXT14:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"},{"type":"reminder","description":"Atgādinājums","start":"2025-01-XXT18:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"}]}
+
+Input: "pievieno sapulci rīt plkst 2 un atgādini man 15 min pirms"
+{"type":"multiple","tasks":[{"type":"calendar","description":"Sapulce","start":"${tomorrowDate}T14:00:00+02:00","end":"${tomorrowDate}T15:00:00+02:00","hasTime":true,"items":null,"lang":"lv"},{"type":"reminder","description":"Sapulce","start":"${tomorrowDate}T13:45:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"}]}
+
+Input: "pievieno piens, maize un atgādini man rīt plkst 9"
+{"type":"multiple","tasks":[{"type":"shopping","description":"Pirkumi","start":null,"end":null,"hasTime":false,"items":"piens, maize","lang":"lv"},{"type":"reminder","description":"Pirkumi","start":"${tomorrowDate}T09:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"}]}`;
   const promptBuildTime = Date.now() - promptStart;
 
   try {
@@ -453,7 +465,7 @@ Input: "pievieno piens, maize, olas"
         { role: 'user', content: text }
       ],
       temperature: 0.1,
-      max_tokens: 500,
+      max_tokens: 1000, // Increased for multiple tasks support
       response_format: { type: "json_object" }
     });
     const apiCallTime = Date.now() - apiCallStart;
@@ -470,8 +482,36 @@ Input: "pievieno piens, maize, olas"
     const totalGptTime = Date.now() - gptStart;
     console.log(`   └─ GPT Details: prompt=${promptBuildTime}ms, api=${apiCallTime}ms, parse=${parseTime}ms, total=${totalGptTime}ms`);
     
-    // Add compatibility fields
-  return {
+    // Check if multiple tasks
+    if (parsed.type === "multiple" && Array.isArray(parsed.tasks) && parsed.tasks.length > 1) {
+      // Convert to MultiReminderResponse format (iOS app expects this)
+      const reminders = parsed.tasks.map(task => ({
+        type: task.type,
+        description: task.description || "Atgādinājums",
+        start: task.start || null,
+        end: task.end || null,
+        hasTime: task.hasTime || false,
+        items: task.items || null,
+        lang: task.lang || 'lv',
+        raw_transcript: text,
+        normalized_transcript: text,
+        confidence: 0.95,
+        source: DEFAULT_TEXT_MODEL
+      }));
+      
+      return {
+        type: "reminders", // iOS app expects "reminders" type
+        lang: parsed.lang || 'lv',
+        reminders: reminders,
+        raw_transcript: text,
+        normalized_transcript: text,
+        confidence: 0.95,
+        source: DEFAULT_TEXT_MODEL
+      };
+    }
+    
+    // Single item (backward compatible)
+    return {
       type: parsed.type,
       description: parsed.description,
       start: parsed.start,
@@ -479,7 +519,7 @@ Input: "pievieno piens, maize, olas"
       hasTime: parsed.hasTime,
       items: parsed.items,
       lang: parsed.lang || 'lv',
-      corrected_input: parsed.corrected_input || null, // NEW: Show if GPT corrected anything
+      corrected_input: parsed.corrected_input || null,
       raw_transcript: text,
       normalized_transcript: text,
       confidence: 0.95,
@@ -1248,18 +1288,37 @@ app.post("/ingest-audio", async (req, res) => {
     quotaUsage.inc({ plan: limits.plan, type: "daily" }, 1);
     if (limits.plan === "pro") { quotaUsage.inc({ plan: limits.plan, type: "monthly" }, 1); }
     
-    finalResult.quota = {
-      plan: limits.plan,
-      dailyLimit: normalizeDaily(limits.dailyLimit),
-      dailyUsed: u.daily.used,
-      dailyRemaining: limits.dailyLimit >= 999999 ? null : Math.max(0, limits.dailyLimit - u.daily.used),
-      dailyGraceLimit: GRACE_DAILY,
-      dailyGraceUsed: u.daily.graceUsed
-    };
-    if (limits.plan === 'pro') {
-      finalResult.quota.monthlyLimit = limits.monthlyLimit;
-      finalResult.quota.monthlyUsed = u.monthly.used;
-      finalResult.quota.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
+    // Add quota info (for both single and multi-item responses)
+    if (finalResult.type === "reminders" && Array.isArray(finalResult.reminders)) {
+      // Multi-item response: add quota to root level
+      finalResult.quota = {
+        plan: limits.plan,
+        dailyLimit: normalizeDaily(limits.dailyLimit),
+        dailyUsed: u.daily.used,
+        dailyRemaining: limits.dailyLimit >= 999999 ? null : Math.max(0, limits.dailyLimit - u.daily.used),
+        dailyGraceLimit: GRACE_DAILY,
+        dailyGraceUsed: u.daily.graceUsed
+      };
+      if (limits.plan === 'pro') {
+        finalResult.quota.monthlyLimit = limits.monthlyLimit;
+        finalResult.quota.monthlyUsed = u.monthly.used;
+        finalResult.quota.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
+      }
+    } else {
+      // Single item response (backward compatible)
+      finalResult.quota = {
+        plan: limits.plan,
+        dailyLimit: normalizeDaily(limits.dailyLimit),
+        dailyUsed: u.daily.used,
+        dailyRemaining: limits.dailyLimit >= 999999 ? null : Math.max(0, limits.dailyLimit - u.daily.used),
+        dailyGraceLimit: GRACE_DAILY,
+        dailyGraceUsed: u.daily.graceUsed
+      };
+      if (limits.plan === 'pro') {
+        finalResult.quota.monthlyLimit = limits.monthlyLimit;
+        finalResult.quota.monthlyUsed = u.monthly.used;
+        finalResult.quota.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
+      }
     }
     
         finalResult.requestId = req.requestId;
