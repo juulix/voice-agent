@@ -967,53 +967,30 @@ app.get("/quota", async (req, res) => {
 
 /* ===== HELPER FUNCTIONS ===== */
 
-// Log transcript flow for debugging - PILNĀ TEKSTA PLŪSMA
+// Log transcript flow for debugging - GPT-4.1-mini ONLY (V3 removed)
 function logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, score, out) {
   const requestId = req.requestId.slice(-8);
   const isError = res.statusCode >= 400;
   const debugMode = process.env.DEBUG_TRANSCRIPT === 'true';
   const alwaysLogFull = process.env.LOG_FULL_TRANSCRIPT === 'true'; // Vienmēr logē pilnu tekstu
   
-  // V3 parser rezultāts (pirms GPT description check)
-  const v3Description = out.description_before || out.description;
-  const v3Confidence = out.confidence || out.v3_confidence || 'N/A';
-  
-  // GPT description check rezultāts
-  const gptDescriptionUsed = out.desc_gpt_used || false;
-  const gptDescriptionMode = out.desc_gpt_mode || 'off';
+  // GPT-4.1-mini result (V3 removed)
   const finalDescription = out.description || 'N/A';
+  const correctedInput = out.corrected_input || null;
   
   // PILNS TEKSTA PLŪSMA LOG (vienmēr)
   console.log(`\n📊 [${requestId}] === TEKSTA PLŪSMA ===`);
   console.log(`🎤 [1] Whisper (raw):        "${raw}"`);
   console.log(`🔧 [2] Normalized:          "${norm}"`);
-  if (needsAnalysis) {
-    console.log(`🤖 [3] GPT Analysis:         "${analyzedText}" (score: ${score.toFixed(2)})`);
+  if (correctedInput) {
+    console.log(`🤖 [3] GPT Corrected:        "${correctedInput}" (fixed Whisper errors)`);
   } else {
-    console.log(`✅ [3] GPT Analysis:         SKIP (score: ${score.toFixed(2)} >= 0.6)`);
+    console.log(`🤖 [3] GPT Analysis:         No corrections needed`);
   }
-  console.log(`🧭 [4] V3 Parser:            "${v3Description}" (confidence: ${v3Confidence})`);
-  if (gptDescriptionUsed) {
-    console.log(`📝 [5] GPT Description:      "${finalDescription}" (mode: ${gptDescriptionMode})`);
-  } else {
-    console.log(`📝 [5] GPT Description:      SKIP (mode: ${gptDescriptionMode})`);
-  }
-  console.log(`📤 [6] Client Final:         "${finalDescription}" (type: ${out.type})`);
+  console.log(`📤 [4] Final Result:         "${finalDescription}" (type: ${out.type})`);
   if (out.start) console.log(`   └─ Start: ${out.start}`);
   if (out.end) console.log(`   └─ End: ${out.end}`);
   console.log(`📊 [${requestId}] ========================\n`);
-  
-  // Kompakts log (backward compatible)
-  const whisperShort = raw.length > 50 ? raw.slice(0, 50) + '...' : raw;
-  const analyzedShort = analyzedText.length > 50 ? analyzedText.slice(0, 50) + '...' : analyzedText;
-  const finalShort = finalDescription.length > 50 ? finalDescription.slice(0, 50) + '...' : finalDescription;
-  
-  let logLine = `📝 [${requestId}] W:"${whisperShort}"`;
-  if (needsAnalysis) {
-    logLine += ` → GPT:"${analyzedShort}"`;
-  }
-  logLine += ` → Client:${out.type}:"${finalShort}"`;
-  // console.log(logLine); // Komentēts, jo augšā ir pilnāks log
   
   // Detalizēts JSON log (ja DEBUG_TRANSCRIPT vai error)
   if (debugMode || isError || alwaysLogFull) {
@@ -1023,22 +1000,16 @@ function logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, sco
       transcriptFlow: {
         whisper_raw: raw,
         normalized: norm,
-        analyzed: analyzedText,
-        analysisApplied: needsAnalysis,
+        corrected_input: correctedInput,
         qualityScore: score,
-        v3Parser: {
-          description: v3Description,
-          confidence: v3Confidence,
+        gpt41Result: {
           type: out.type,
+          description: finalDescription,
           start: out.start,
           end: out.end,
-          hasTime: out.hasTime
-        },
-        gptDescriptionCheck: {
-          used: gptDescriptionUsed,
-          mode: gptDescriptionMode,
-          before: out.description_before,
-          after: finalDescription
+          hasTime: out.hasTime,
+          items: out.items,
+          lang: out.lang
         },
         clientFinal: {
           type: out.type,
@@ -1047,8 +1018,7 @@ function logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, sco
           end: out.end,
           hasTime: out.hasTime,
           items: out.items
-        },
-        semanticTagsKept: out._semanticTagsKept || {}
+        }
       }
     }, null, 2));
   }
