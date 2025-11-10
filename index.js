@@ -381,13 +381,15 @@ function toRigaISO(d) {
 
 /**
  * Parse Latvian calendar/reminder text using GPT-4.1-mini
- * @param {string} text - Input text
+   * @param {string} text - Input text
  * @param {string} nowISO - Current time ISO string
- * @param {string} langHint - Language hint (default: 'lv')
+   * @param {string} langHint - Language hint (default: 'lv')
  * @returns {Object|null} Parsed result
  */
 // NEW: GPT-4.1-mini parser function (replaces V3)
 async function parseWithGPT41(text, requestId, nowISO, langHint = 'lv') {
+  const gptStart = Date.now();
+  
   const now = new Date(nowISO);
   const rigaTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Riga' }));
   
@@ -401,6 +403,7 @@ async function parseWithGPT41(text, requestId, nowISO, langHint = 'lv') {
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowDate = tomorrow.toISOString().split('T')[0];
   
+  const promptStart = Date.now();
   const systemPrompt = `Tu esi balss asistents latviešu valodai. Pārvērš lietotāja runu JSON formātā.
 
 **SVARĪGI: WHISPER KĻŪDU LABOŠANA**
@@ -528,8 +531,10 @@ Input: "pievieno piens, maize, olas"
 }
 
 ATBILDĒ TIKAI JSON! Nekādu markdown, nekādu papildu tekstu.`;
+  const promptBuildTime = Date.now() - promptStart;
 
   try {
+    const apiCallStart = Date.now();
     const completion = await openai.chat.completions.create({
       model: DEFAULT_TEXT_MODEL,
       messages: [
@@ -540,16 +545,22 @@ ATBILDĒ TIKAI JSON! Nekādu markdown, nekādu papildu tekstu.`;
       max_tokens: 500,
       response_format: { type: "json_object" }
     });
+    const apiCallTime = Date.now() - apiCallStart;
 
+    const parseStart = Date.now();
     let response = completion.choices[0].message.content.trim();
     
     // Clean markdown if present
     response = response.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
     
     const parsed = JSON.parse(response);
+    const parseTime = Date.now() - parseStart;
+    
+    const totalGptTime = Date.now() - gptStart;
+    console.log(`   └─ GPT Details: prompt=${promptBuildTime}ms, api=${apiCallTime}ms, parse=${parseTime}ms, total=${totalGptTime}ms`);
     
     // Add compatibility fields
-    return {
+  return {
       type: parsed.type,
       description: parsed.description,
       start: parsed.start,
@@ -1050,11 +1061,11 @@ app.post("/test-parse", async (req, res) => {
       parsed = await parseWithGPT41(analyzedText, req.headers['x-request-id'] || 'test', nowISO, langHint);
       if (parsed) {
         console.log(`🧭 [TEST] GPT-4.1-mini used: type=${parsed.type}`);
-        parsed.raw_transcript = raw;
-        parsed.normalized_transcript = norm;
-        parsed.analyzed_transcript = analyzedText;
-        parsed.test_mode = true;
-        return res.json(parsed);
+      parsed.raw_transcript = raw;
+      parsed.normalized_transcript = norm;
+      parsed.analyzed_transcript = analyzedText;
+      parsed.test_mode = true;
+      return res.json(parsed);
       }
     } catch (error) {
       console.error(`❌ [TEST] GPT-4.1-mini parsing failed:`, error);
@@ -1069,23 +1080,35 @@ app.post("/test-parse", async (req, res) => {
 
 app.post("/ingest-audio", async (req, res) => {
   const processingStart = Date.now();
+  const timings = {}; // Profiling data
+  let lastTime = processingStart;
+  
   try {
     // Auth
+    console.time(`[${req.requestId}] auth-check`);
+    const authStart = Date.now();
     if (APP_BEARER_TOKEN) {
       const auth = req.headers.authorization || "";
       if (auth !== `Bearer ${APP_BEARER_TOKEN}`) {
+        console.timeEnd(`[${req.requestId}] auth-check`);
         return res.status(401).json({ 
           error: "unauthorized",
           requestId: req.requestId
         });
       }
     }
+    console.timeEnd(`[${req.requestId}] auth-check`);
+    timings.auth = Date.now() - authStart;
+    lastTime = Date.now();
 
     // Idempotency check
+    console.time(`[${req.requestId}] idempotency-check`);
+    const idempotencyStart = Date.now();
     const idempotencyKey = req.header("Idempotency-Key");
     if (idempotencyKey) {
       const cached = idempotency.get(idempotencyKey);
       if (cached && cached.expires > Date.now()) {
+        console.timeEnd(`[${req.requestId}] idempotency-check`);
         console.log(`🔄 [${req.requestId}] Returning cached result for Idempotency-Key: ${idempotencyKey}`);
         return res.json({
           ...cached.result,
@@ -1094,12 +1117,20 @@ app.post("/ingest-audio", async (req, res) => {
         });
       }
     }
+    console.timeEnd(`[${req.requestId}] idempotency-check`);
+    timings.idempotency = Date.now() - idempotencyStart;
+    lastTime = Date.now();
 
     // Identitāte & plāns kvotām
+    console.time(`[${req.requestId}] getUserUsage`);
+    const getUserUsageStart = Date.now();
     const userId = req.header("X-User-Id") || "anon";
     const planHdr = req.header("X-Plan") || "basic";
     const langHint = (req.header("X-Lang") || "lv").toLowerCase();
     const { u, limits } = await getUserUsage(userId, planHdr);
+    console.timeEnd(`[${req.requestId}] getUserUsage`);
+    timings.getUserUsage = Date.now() - getUserUsageStart;
+    lastTime = Date.now();
 
     // Pārbaude pirms apstrādes
     if (u.daily.used >= limits.dailyLimit) {
@@ -1110,6 +1141,8 @@ app.post("/ingest-audio", async (req, res) => {
     }
 
     // Multipart
+    console.time(`[${req.requestId}] busboy-parsing`);
+    const busboyStart = Date.now();
     const fields = {};
     let fileBuf = Buffer.alloc(0);
     let filename = "audio.m4a";
@@ -1128,6 +1161,9 @@ app.post("/ingest-audio", async (req, res) => {
       bb.on("finish", resolve);
       req.pipe(bb);
     });
+    console.timeEnd(`[${req.requestId}] busboy-parsing`);
+    timings.busboy = Date.now() - busboyStart;
+    lastTime = Date.now();
 
     if (fileTooLarge) {
       return res.status(413).json({ error: "file_too_large", requestId: req.requestId });
@@ -1148,6 +1184,8 @@ app.post("/ingest-audio", async (req, res) => {
     }
 
     // Transcribe (OpenAI) with retry logic
+    console.time(`[${req.requestId}] whisper-transcription`);
+    const whisperStart = Date.now();
     const file = await toFile(fileBuf, filename, { type: guessMime(filename) });
     let tr;
     const transcriptionMaxRetries = 3;
@@ -1170,11 +1208,19 @@ app.post("/ingest-audio", async (req, res) => {
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
+    console.timeEnd(`[${req.requestId}] whisper-transcription`);
+    timings.whisper = Date.now() - whisperStart;
+    lastTime = Date.now();
 
     // Normalizācija + kvalitātes pārbaude
+    console.time(`[${req.requestId}] normalization-quality`);
+    const normStart = Date.now();
     const raw = (tr.text || "").trim();
     const norm = normalizeTranscript(raw, langHint);
     const score = qualityScore(norm);
+    console.timeEnd(`[${req.requestId}] normalization-quality`);
+    timings.normalization = Date.now() - normStart;
+    lastTime = Date.now();
 
     if (norm.length < 2 || score < 0.35) {
       if (u.daily.graceUsed < GRACE_DAILY) u.daily.graceUsed += 1;
@@ -1216,20 +1262,25 @@ app.post("/ingest-audio", async (req, res) => {
     } else {
       nowISO = toRigaISO(new Date());
     }
-
+    
     // Parse with GPT-4.1-mini (NEW - replaces all V3 logic)
     console.log(`📊 [${req.requestId}] === TRANSCRIPT FLOW ===`);
     console.log(`🎤 [1] Whisper Raw:    "${raw}"`);
     console.log(`🔧 [2] Normalized:     "${norm}"`);
     
+    console.time(`[${req.requestId}] gpt-parse`);
+    const gptParseStart = Date.now();
     let parsed;
     try {
       parsed = await parseWithGPT41(norm, req.requestId, nowISO, langHint);
+      console.timeEnd(`[${req.requestId}] gpt-parse`);
+      timings.gptParse = Date.now() - gptParseStart;
+      lastTime = Date.now();
       
       // Show if GPT corrected anything
       if (parsed.corrected_input) {
         console.log(`🤖 [3] GPT Corrected:  "${parsed.corrected_input}" (fixed Whisper errors)`);
-      } else {
+          } else {
         console.log(`🤖 [3] GPT Analysis:   No corrections needed`);
       }
       
@@ -1237,10 +1288,27 @@ app.post("/ingest-audio", async (req, res) => {
       if (parsed.start) {
         console.log(`   └─ Time: ${parsed.start}${parsed.end ? ' → ' + parsed.end : ''}`);
       }
-      console.log(`✅ Duration: ${Date.now() - processingStart}ms`);
+      // Profiling summary
+      timings.total = Date.now() - processingStart;
+      const sumOfTimings = (timings.auth || 0) + (timings.idempotency || 0) + (timings.getUserUsage || 0) + (timings.busboy || 0) + (timings.whisper || 0) + (timings.normalization || 0) + (timings.gptParse || 0);
+      timings.other = timings.total - sumOfTimings;
+      
+      console.log(`⏱️  [${req.requestId}] === PROFILING ===`);
+      console.log(`   Auth:           ${timings.auth || 0}ms`);
+      console.log(`   Idempotency:    ${timings.idempotency || 0}ms`);
+      console.log(`   getUserUsage:   ${timings.getUserUsage || 0}ms`);
+      console.log(`   Busboy:         ${timings.busboy || 0}ms`);
+      console.log(`   Whisper:        ${timings.whisper || 0}ms (${timings.total > 0 ? ((timings.whisper / timings.total) * 100).toFixed(1) : 0}%)`);
+      console.log(`   Normalization:  ${timings.normalization || 0}ms`);
+      console.log(`   GPT Parse:      ${timings.gptParse || 0}ms (${timings.total > 0 ? ((timings.gptParse / timings.total) * 100).toFixed(1) : 0}%)`);
+      console.log(`   Quota Update:   ${timings.quotaUpdate || 0}ms`);
+      console.log(`   Other:          ${timings.other || 0}ms`);
+      console.log(`   TOTAL:          ${timings.total}ms`);
+      console.log(`✅ Duration: ${timings.total}ms`);
       console.log(`📊 [${req.requestId}] ========================\n`);
       
     } catch (error) {
+      console.timeEnd(`[${req.requestId}] gpt-parse`);
       console.error(`❌ [${req.requestId}] GPT parsing failed:`, error);
       return res.status(500).json({
         error: "parsing_failed",
@@ -1258,9 +1326,13 @@ app.post("/ingest-audio", async (req, res) => {
     finalResult.confidence = score;
     
     // Quota counting
+    console.time(`[${req.requestId}] quota-update`);
+    const quotaStart = Date.now();
     u.daily.used += 1;
     operationsTotal.inc({ status: "success", plan: limits.plan }, 1);
     await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
+    console.timeEnd(`[${req.requestId}] quota-update`);
+    timings.quotaUpdate = Date.now() - quotaStart;
     databaseOperations.inc({ operation: "update", table: "quota_usage" }, 1);
     quotaUsage.inc({ plan: limits.plan, type: "daily" }, 1);
     if (limits.plan === "pro") { quotaUsage.inc({ plan: limits.plan, type: "monthly" }, 1); }
@@ -1279,11 +1351,11 @@ app.post("/ingest-audio", async (req, res) => {
       finalResult.quota.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
     }
     
-    finalResult.requestId = req.requestId;
-    const processingTime = Date.now() - processingStart;
-    audioProcessingTime.observe({ status: "success" }, processingTime);
-    
-    // Log transcript flow
+        finalResult.requestId = req.requestId;
+      const processingTime = Date.now() - processingStart;
+      audioProcessingTime.observe({ status: "success" }, processingTime);
+      
+      // Log transcript flow
     logTranscriptFlow(req, res, raw, norm, norm, false, score, finalResult);
     
     return res.json(finalResult);
