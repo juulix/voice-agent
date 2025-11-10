@@ -414,9 +414,10 @@ Datums: ${today}, Rīt: ${tomorrowDate}, Laiks: ${currentTime}, Diena: ${current
 
 PRASĪBAS:
 1. Atbildē TIKAI JSON - bez markdown, bez teksta
-2. Viena VAI vairākas darbības: reminder VAI calendar VAI shopping
-3. Ja VIENA darbība: JSON: {type, description, start, end, hasTime, items, lang, corrected_input}
-4. Ja VAIRĀKAS darbības: JSON: {type:"multiple", tasks:[{type, description, start, end, hasTime, items, lang}, ...]}
+2. Viena darbība: reminder VAI calendar VAI shopping
+3. VAIRĀKAS darbības: TIKAI reminder tipam (vairāki reminder vienā reizē)
+4. Ja VIENA darbība: JSON: {type, description, start, end, hasTime, items, lang, corrected_input}
+5. Ja VAIRĀKAS REMINDER: JSON: {type:"multiple", tasks:[{type:"reminder", description, start, end, hasTime, items, lang}, ...]}
 
 LAIKA LOĢIKA:
 - "rīt"=${tomorrowDate}, "šodien"=${today}, "pirmdien/otrdien/utt"=nākamā diena
@@ -444,16 +445,12 @@ Input: "20. novembrī pulksten 14 budžeta izskatīšana"
 Input: "pievieno piens, maize, olas"
 {"type":"shopping","description":"Pirkumi","start":null,"end":null,"hasTime":false,"items":"piens, maize, olas","lang":"lv","corrected_input":null}
 
-VAIRĀKU DARBĪBU PIEMĒRI:
+VAIRĀKU REMINDER PIEMĒRI (TIKAI REMINDER):
 
 Input: "uztaisi trīs atgādinājumus: rīt plkst 9, pirmdien plkst 14, trešdien plkst 18"
 {"type":"multiple","tasks":[{"type":"reminder","description":"Atgādinājums","start":"${tomorrowDate}T09:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"},{"type":"reminder","description":"Atgādinājums","start":"2025-01-XXT14:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"},{"type":"reminder","description":"Atgādinājums","start":"2025-01-XXT18:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"}]}
 
-Input: "pievieno sapulci rīt plkst 2 un atgādini man 15 min pirms"
-{"type":"multiple","tasks":[{"type":"calendar","description":"Sapulce","start":"${tomorrowDate}T14:00:00+02:00","end":"${tomorrowDate}T15:00:00+02:00","hasTime":true,"items":null,"lang":"lv"},{"type":"reminder","description":"Sapulce","start":"${tomorrowDate}T13:45:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"}]}
-
-Input: "pievieno piens, maize un atgādini man rīt plkst 9"
-{"type":"multiple","tasks":[{"type":"shopping","description":"Pirkumi","start":null,"end":null,"hasTime":false,"items":"piens, maize","lang":"lv"},{"type":"reminder","description":"Pirkumi","start":"${tomorrowDate}T09:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"}]}`;
+SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgriez TIKAI PIRMO darbību (calendar vai shopping). Multi-item atbalsts ir TIKAI reminder tipam.`;
   const promptBuildTime = Date.now() - promptStart;
 
   try {
@@ -482,32 +479,57 @@ Input: "pievieno piens, maize un atgādini man rīt plkst 9"
     const totalGptTime = Date.now() - gptStart;
     console.log(`   └─ GPT Details: prompt=${promptBuildTime}ms, api=${apiCallTime}ms, parse=${parseTime}ms, total=${totalGptTime}ms`);
     
-    // Check if multiple tasks
+    // Check if multiple tasks - ONLY for reminder type
     if (parsed.type === "multiple" && Array.isArray(parsed.tasks) && parsed.tasks.length > 1) {
-      // Convert to MultiReminderResponse format (iOS app expects this)
-      const reminders = parsed.tasks.map(task => ({
-        type: task.type,
-        description: task.description || "Atgādinājums",
-        start: task.start || null,
-        end: task.end || null,
-        hasTime: task.hasTime || false,
-        items: task.items || null,
-        lang: task.lang || 'lv',
-        raw_transcript: text,
-        normalized_transcript: text,
-        confidence: 0.95,
-        source: DEFAULT_TEXT_MODEL
-      }));
+      // Filter only reminder tasks (ignore calendar/shopping in multi-item)
+      const reminderTasks = parsed.tasks.filter(task => task.type === "reminder");
       
-      return {
-        type: "reminders", // iOS app expects "reminders" type
-        lang: parsed.lang || 'lv',
-        reminders: reminders,
-        raw_transcript: text,
-        normalized_transcript: text,
-        confidence: 0.95,
-        source: DEFAULT_TEXT_MODEL
-      };
+      // Only return multi-item if all tasks are reminders
+      if (reminderTasks.length > 1 && reminderTasks.length === parsed.tasks.length) {
+        // Convert to MultiReminderResponse format (iOS app expects this)
+        const reminders = reminderTasks.map(task => ({
+          type: task.type,
+          description: task.description || "Atgādinājums",
+          start: task.start || null,
+          end: task.end || null,
+          hasTime: task.hasTime || false,
+          items: task.items || null,
+          lang: task.lang || 'lv',
+          raw_transcript: text,
+          normalized_transcript: text,
+          confidence: 0.95,
+          source: DEFAULT_TEXT_MODEL
+        }));
+        
+        return {
+          type: "reminders", // iOS app expects "reminders" type
+          lang: parsed.lang || 'lv',
+          reminders: reminders,
+          raw_transcript: text,
+          normalized_transcript: text,
+          confidence: 0.95,
+          source: DEFAULT_TEXT_MODEL
+        };
+      }
+      // If mixed types, return only first non-reminder task (fall through to single item)
+      if (reminderTasks.length === 0 && parsed.tasks.length > 0) {
+        // All tasks are non-reminder, return first one
+        const firstTask = parsed.tasks[0];
+        return {
+          type: firstTask.type,
+          description: firstTask.description,
+          start: firstTask.start,
+          end: firstTask.end,
+          hasTime: firstTask.hasTime,
+          items: firstTask.items,
+          lang: firstTask.lang || 'lv',
+          corrected_input: parsed.corrected_input || null,
+          raw_transcript: text,
+          normalized_transcript: text,
+          confidence: 0.95,
+          source: DEFAULT_TEXT_MODEL
+        };
+      }
     }
     
     // Single item (backward compatible)
@@ -937,7 +959,6 @@ function logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, sco
   const alwaysLogFull = process.env.LOG_FULL_TRANSCRIPT === 'true'; // Vienmēr logē pilnu tekstu
   
   // GPT-4.1-mini result (V3 removed)
-  const finalDescription = out.description || 'N/A';
   const correctedInput = out.corrected_input || null;
   
   // PILNS TEKSTA PLŪSMA LOG (vienmēr)
@@ -949,9 +970,19 @@ function logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, sco
   } else {
     console.log(`🤖 [3] GPT Analysis:         No corrections needed`);
   }
-  console.log(`📤 [4] Final Result:         "${finalDescription}" (type: ${out.type})`);
-  if (out.start) console.log(`   └─ Start: ${out.start}`);
-  if (out.end) console.log(`   └─ End: ${out.end}`);
+  
+  // Handle multi-item vs single item logging
+  if (out.type === "reminders" && Array.isArray(out.reminders)) {
+    console.log(`📤 [4] Final Result:         ${out.reminders.length} items (type: ${out.type})`);
+    out.reminders.forEach((item, idx) => {
+      console.log(`   └─ [${idx + 1}] ${item.type}: "${item.description || 'N/A'}"${item.start ? ' @ ' + item.start : ''}`);
+    });
+  } else {
+    const finalDescription = out.description || 'N/A';
+    console.log(`📤 [4] Final Result:         "${finalDescription}" (type: ${out.type})`);
+    if (out.start) console.log(`   └─ Start: ${out.start}`);
+    if (out.end) console.log(`   └─ End: ${out.end}`);
+  }
   console.log(`📊 [${requestId}] ========================\n`);
   
   // Detalizēts JSON log (ja DEBUG_TRANSCRIPT vai error)
@@ -964,18 +995,33 @@ function logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, sco
         normalized: norm,
         corrected_input: correctedInput,
         qualityScore: score,
-        gpt41Result: {
+        gpt41Result: out.type === "reminders" && Array.isArray(out.reminders) ? {
           type: out.type,
-          description: finalDescription,
+          count: out.reminders.length,
+          reminders: out.reminders.map(item => ({
+            type: item.type,
+            description: item.description,
+            start: item.start,
+            end: item.end,
+            hasTime: item.hasTime,
+            items: item.items
+          }))
+        } : {
+          type: out.type,
+          description: out.description || 'N/A',
           start: out.start,
           end: out.end,
           hasTime: out.hasTime,
           items: out.items,
           lang: out.lang
         },
-        clientFinal: {
+        clientFinal: out.type === "reminders" && Array.isArray(out.reminders) ? {
           type: out.type,
-          description: finalDescription,
+          count: out.reminders.length,
+          reminders: out.reminders
+        } : {
+          type: out.type,
+          description: out.description || 'N/A',
           start: out.start,
           end: out.end,
           hasTime: out.hasTime,
@@ -1235,9 +1281,17 @@ app.post("/ingest-audio", async (req, res) => {
         console.log(`🤖 [3] GPT Analysis:   No corrections needed`);
       }
       
-      console.log(`📤 [4] Final Result:   type=${parsed.type}, desc="${parsed.description}"`);
-      if (parsed.start) {
-        console.log(`   └─ Time: ${parsed.start}${parsed.end ? ' → ' + parsed.end : ''}`);
+      // Handle multi-item vs single item logging
+      if (parsed.type === "reminders" && Array.isArray(parsed.reminders)) {
+        console.log(`📤 [4] Final Result:   type=${parsed.type}, count=${parsed.reminders.length} items`);
+        parsed.reminders.forEach((item, idx) => {
+          console.log(`   └─ [${idx + 1}] ${item.type}: "${item.description}"${item.start ? ' @ ' + item.start : ''}`);
+        });
+      } else {
+        console.log(`📤 [4] Final Result:   type=${parsed.type}, desc="${parsed.description || 'N/A'}"`);
+        if (parsed.start) {
+          console.log(`   └─ Time: ${parsed.start}${parsed.end ? ' → ' + parsed.end : ''}`);
+        }
       }
       // Profiling summary
       timings.total = Date.now() - processingStart;
