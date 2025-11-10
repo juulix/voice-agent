@@ -406,131 +406,42 @@ async function parseWithGPT41(text, requestId, nowISO, langHint = 'lv') {
   const promptStart = Date.now();
   const systemPrompt = `Tu esi balss asistents latviešu valodai. Pārvērš lietotāja runu JSON formātā.
 
-**SVARĪGI: WHISPER KĻŪDU LABOŠANA**
+WHISPER KĻŪDU LABOŠANA:
+Labo acīmredzamas kļūdas: "sastajā"→"sestajā" (26.), "pulkstenis"→"pulksten", "reit"/"rit"→"rīt". Ja labo, ieliec "corrected_input".
 
-Whisper transkripcija var saturēt kļūdas. Tava pirmā prioritāte ir saprast lietotāja nodomu un labot acīmredzamas kļūdas:
+KONTEKSTS:
+Datums: ${today}, Rīt: ${tomorrowDate}, Laiks: ${currentTime}, Diena: ${currentDay}, Timezone: Europe/Riga
 
-- "divdesmit sastajā" → saprot kā "divdesmit sestajā" (26.)
-- "pulkstenis" → saprot kā "pulksten"
-- "reit" / "rit" → saprot kā "rīt"
-- Loģiski interpretē teikumu kontekstu, nevis burtiski seko kļūdainajam tekstam
-
-Piemērs:
-Input: "Divdesmit sastajā novembrī sapulce Limbažos" (Whisper kļūda!)
-Tavs uzdevums: Saprast ka "sastajā" ir "sestajā" → 26. novembris
-Output: {"type": "calendar", "description": "Sapulce Limbažos", "start": "2025-11-26T14:00:00+02:00", ..., "corrected_input": "Divdesmit sestajā novembrī sapulce Limbažos"}
-
-ŠODIENAS KONTEKSTS:
-- Datums: ${today}
-- Rīt: ${tomorrowDate}
-- Laiks: ${currentTime}
-- Diena: ${currentDay}
-- Timezone: Europe/Riga
-
-KRITISKAS PRASĪBAS:
-1. Atbildē TIKAI JSON - bez markdown (\`\`\`), bez teksta
+PRASĪBAS:
+1. Atbildē TIKAI JSON - bez markdown, bez teksta
 2. Viena darbība: reminder VAI calendar VAI shopping
-3. Izmanto TIKAI šo JSON struktūru (nekādu papildu lauku)
-4. LABO Whisper kļūdas, izmantojot konteksta izpratni
+3. JSON: {type, description, start, end, hasTime, items, lang, corrected_input}
 
-JSON FORMĀTS:
-{
-  "type": "reminder" | "calendar" | "shopping",
-  "description": "īss nosaukums",
-  "start": "YYYY-MM-DDTHH:mm:ss+02:00" | null,
-  "end": "YYYY-MM-DDTHH:mm:ss+02:00" | null,
-  "hasTime": true | false,
-  "items": "saraksts" | null,
-  "lang": "lv",
-  "corrected_input": "labotais teksts ja bija kļūdas" | null
-}
+LAIKA LOĢIKA:
+- "rīt"=${tomorrowDate}, "šodien"=${today}, "pirmdien/otrdien/utt"=nākamā diena
+- "no rīta"=09:00, "pēcpusdienā/dienā"=14:00, "vakarā"=18:00 (ja nav precīzs laiks)
+- plkst 1-7 bez "no rīta"→PM (14:00-19:00), plkst 8-11→AM, plkst 12+→keep
 
-LATVIEŠU LAIKA LOĢIKA:
-- "rīt" = ${tomorrowDate}
-- "šodien" = ${today}
-- "pirmdien/otrdien/utt" = nākamā attiecīgā diena
-- "no rīta" = 09:00 (ja nav precīzs laiks)
-- "pēcpusdienā/dienā" = 14:00 (ja nav precīzs laiks)
-- "vakarā" = 18:00 (ja nav precīzs laiks)
+DATUMU SAPRATNE:
+- "divdesmit sestajā novembrī"=26. novembris (NE 10:20!)
+- "20. novembrī plkst 14"=20. novembris 14:00 (NE 02:00!)
+- Ordinal skaitļi (sestajā, divdesmitajā)=datumi, NE laiki
 
-AM/PM KONVERSIJA:
-- plkst 1-7 bez "no rīta" → PM (14:00-19:00)
-- plkst 8-11 → AM (keep 08:00-11:00)
-- plkst 12+ → keep as-is
+CALENDAR: Vienmēr pievieno end (+1h no start). Ja nav laika→hasTime=false, bet default 14:00.
 
-DATUMU SAPRATNE (SVARĪGI!):
-- "divdesmit sestajā novembrī" = 26. novembris (NE 10:20!)
-- "20. novembrī plkst 14" = 20. novembris 14:00 (NE 02:00!)
-- Ordinal skaitļi (sestajā, divdesmitajā, trīsdesmitajā) = datumi, NE laiki
-- Ja dzirdi "desmit" vārda saliktenē ar citiem skaitļiem → tas ir datums!
-
-CALENDAR NOTIKUMI:
-- Vienmēr pievieno end laiku (+1 stunda no start)
-- Ja nav laika → hasTime=false, bet joprojām set default time 14:00
-
-PIEMĒRI AR KĻŪDU LABOŠANU:
+PIEMĒRI:
 
 Input: "Divdesmit sastajā novembrī sapulce Limbažos" (KĻŪDA: "sastajā")
-{
-  "type": "calendar",
-  "description": "Sapulce Limbažos",
-  "start": "2025-11-26T14:00:00+02:00",
-  "end": "2025-11-26T15:00:00+02:00",
-  "hasTime": false,
-  "items": null,
-  "lang": "lv",
-  "corrected_input": "Divdesmit sestajā novembrī sapulce Limbažos"
-}
+{"type":"calendar","description":"Sapulce Limbažos","start":"2025-11-26T14:00:00+02:00","end":"2025-11-26T15:00:00+02:00","hasTime":false,"items":null,"lang":"lv","corrected_input":"Divdesmit sestajā novembrī sapulce Limbažos"}
 
-Input: "reit plkstenis 9 atgādini man" (KĻŪDAS: "reit", "plkstenis")
-{
-  "type": "reminder",
-  "description": "Atgādinājums",
-  "start": "${tomorrowDate}T09:00:00+02:00",
-  "end": null,
-  "hasTime": true,
-  "items": null,
-  "lang": "lv",
-  "corrected_input": "rīt pulksten 9 atgādini man"
-}
-
-Input: "atgādini man rīt plkst 9" (NAV KĻŪDU)
-{
-  "type": "reminder",
-  "description": "Atgādinājums",
-  "start": "${tomorrowDate}T09:00:00+02:00",
-  "end": null,
-  "hasTime": true,
-  "items": null,
-  "lang": "lv",
-  "corrected_input": null
-}
+Input: "reit plkstenis 9 atgādini man" (KĻŪDAS: "reit","plkstenis")
+{"type":"reminder","description":"Atgādinājums","start":"${tomorrowDate}T09:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv","corrected_input":"rīt pulksten 9 atgādini man"}
 
 Input: "20. novembrī pulksten 14 budžeta izskatīšana"
-{
-  "type": "calendar",
-  "description": "Budžeta izskatīšana",
-  "start": "2025-11-20T14:00:00+02:00",
-  "end": "2025-11-20T15:00:00+02:00",
-  "hasTime": true,
-  "items": null,
-  "lang": "lv",
-  "corrected_input": null
-}
+{"type":"calendar","description":"Budžeta izskatīšana","start":"2025-11-20T14:00:00+02:00","end":"2025-11-20T15:00:00+02:00","hasTime":true,"items":null,"lang":"lv","corrected_input":null}
 
 Input: "pievieno piens, maize, olas"
-{
-  "type": "shopping",
-  "description": "Pirkumi",
-  "start": null,
-  "end": null,
-  "hasTime": false,
-  "items": "piens, maize, olas",
-  "lang": "lv",
-  "corrected_input": null
-}
-
-ATBILDĒ TIKAI JSON! Nekādu markdown, nekādu papildu tekstu.`;
+{"type":"shopping","description":"Pirkumi","start":null,"end":null,"hasTime":false,"items":"piens, maize, olas","lang":"lv","corrected_input":null}`;
   const promptBuildTime = Date.now() - promptStart;
 
   try {
