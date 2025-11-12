@@ -430,12 +430,13 @@ PRASĪBAS:
 4. Ja VIENA darbība: JSON: {type, description, notes, start, end, hasTime, items, lang, corrected_input}
 5. Ja VAIRĀKAS REMINDER: JSON: {type:"multiple", tasks:[{type:"reminder", description, notes, start, end, hasTime, items, lang}, ...]}
 
-NOTES FIELD LOĢIKA (tikai reminder tipam):
-- "notes" ir papildu konteksts/garāks teksts, kas neietilpst īsajā "description"
-- Ja teksts ir garāks (>10 vārdi) → description = īss summary, notes = full text vai papildu detaļas
-- Ja ir papildu konteksts pēc galvenās darbības → notes field
-- Ja vienkāršs reminder → notes = null
-- Trigger vārdi priekš "inbox reminder" (bez due date): "pieraksti", "piezīme", "ideja", "note", "atceros"
+NOTES FIELD LOĢIKA:
+- "notes" lauks ir TIKAI reminder tipam - calendar un shopping tipiem vienmēr notes = null
+- Reminder tipam: "notes" ir papildu konteksts/garāks teksts, kas neietilpst īsajā "description"
+- Reminder tipam: Ja teksts ir garāks (>10 vārdi) → description = īss summary, notes = full text vai papildu detaļas
+- Reminder tipam: Ja ir papildu konteksts pēc galvenās darbības → notes field
+- Reminder tipam: Ja vienkāršs reminder → notes = null
+- Reminder tipam: Trigger vārdi priekš "inbox reminder" (bez due date): "pieraksti", "piezīme", "ideja", "note", "atceros"
 
 LAIKA LOĢIKA:
 - "rīt"=${tomorrowDate}, "šodien"=${today}, "pirmdien/otrdien/utt"=nākamā diena
@@ -452,7 +453,7 @@ CALENDAR: Vienmēr pievieno end (+1h no start). Ja nav laika→hasTime=false, be
 PIEMĒRI:
 
 Input: "Divdesmit sastajā novembrī sapulce Limbažos" (KĻŪDA: "sastajā")
-{"type":"calendar","description":"Sapulce Limbažos","start":"2025-11-26T14:00:00+02:00","end":"2025-11-26T15:00:00+02:00","hasTime":false,"items":null,"lang":"lv","corrected_input":"Divdesmit sestajā novembrī sapulce Limbažos"}
+{"type":"calendar","description":"Sapulce Limbažos","notes":null,"start":"2025-11-26T14:00:00+02:00","end":"2025-11-26T15:00:00+02:00","hasTime":false,"items":null,"lang":"lv","corrected_input":"Divdesmit sestajā novembrī sapulce Limbažos"}
 
 Input: "reit plkstenis 9 atgādini man" (KĻŪDAS: "reit","plkstenis")
 {"type":"reminder","description":"Atgādinājums","notes":null,"start":"${tomorrowDate}T09:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv","corrected_input":"rīt pulksten 9 atgādini man"}
@@ -467,10 +468,10 @@ Input: "Atgādini man rīt 9 zvanīt klientam Jānim un apspriest budžetu"
 {"type":"reminder","description":"Zvanīt klientam Jānim","notes":"Apspriest budžetu","start":"${tomorrowDate}T09:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv","corrected_input":null}
 
 Input: "20. novembrī pulksten 14 budžeta izskatīšana"
-{"type":"calendar","description":"Budžeta izskatīšana","start":"2025-11-20T14:00:00+02:00","end":"2025-11-20T15:00:00+02:00","hasTime":true,"items":null,"lang":"lv","corrected_input":null}
+{"type":"calendar","description":"Budžeta izskatīšana","notes":null,"start":"2025-11-20T14:00:00+02:00","end":"2025-11-20T15:00:00+02:00","hasTime":true,"items":null,"lang":"lv","corrected_input":null}
 
 Input: "pievieno piens, maize, olas"
-{"type":"shopping","description":"Pirkumi","start":null,"end":null,"hasTime":false,"items":"piens, maize, olas","lang":"lv","corrected_input":null}
+{"type":"shopping","description":"Pirkumi","notes":null,"start":null,"end":null,"hasTime":false,"items":"piens, maize, olas","lang":"lv","corrected_input":null}
 
 VAIRĀKU REMINDER PIEMĒRI (TIKAI REMINDER):
 
