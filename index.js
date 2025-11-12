@@ -478,8 +478,12 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
     };
     
     // GPT-5 modeļi izmanto max_completion_tokens (kā GPT-4)
-    // Nav max_output_tokens atbalsta GPT-5 modeļiem
-    apiParams.max_completion_tokens = 1000;
+    // GPT-5-nano vajag lielāku limit (2000), lai izvairītos no finish_reason: 'length'
+    if (modelName === 'gpt-5-nano') {
+      apiParams.max_completion_tokens = 2000;
+    } else {
+      apiParams.max_completion_tokens = 1000;
+    }
     
     // Only add temperature if model supports it (not GPT-5 mini/nano)
     if (!FIXED_TEMP_MODELS.has(modelName)) {
