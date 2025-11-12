@@ -26,10 +26,11 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 /* ===== OPENAI HELPER FUNCTIONS ===== */
 // Modeļi, kam NEDRĪKST sūtīt temperature (atsevišķi transcribe/realtime)
-// GPT-5 mini arī neatbalsta temperature (tikai default 1)
+// GPT-5 mini un nano neatbalsta temperature (tikai default 1)
 const FIXED_TEMP_MODELS = new Set([
   "gpt-4o-mini-transcribe",
   "gpt-5-mini",
+  "gpt-5-nano",
   "gpt-realtime",
 ]);
 
@@ -386,8 +387,9 @@ function toRigaISO(d) {
    * @param {string} langHint - Language hint (default: 'lv')
  * @returns {Object|null} Parsed result
  */
-// NEW: GPT-4.1-mini parser function (replaces V3)
-async function parseWithGPT41(text, requestId, nowISO, langHint = 'lv') {
+// Generic parser function that works with any GPT model
+// Used for GPT-4.1-mini, GPT-5-mini, GPT-5-nano
+async function parseWithGPT(text, requestId, nowISO, langHint = 'lv', modelName = DEFAULT_TEXT_MODEL) {
   const gptStart = Date.now();
   
   const now = new Date(nowISO);
@@ -455,16 +457,26 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
 
   try {
     const apiCallStart = Date.now();
-    const completion = await openai.chat.completions.create({
-      model: DEFAULT_TEXT_MODEL,
+    
+    // Build API parameters - remove unsupported params for GPT-5 models
+    const apiParams = {
+      model: modelName,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: text }
       ],
-      temperature: 0.1,
       max_tokens: 1000, // Increased for multiple tasks support
       response_format: { type: "json_object" }
-    });
+    };
+    
+    // Only add temperature if model supports it (not GPT-5 mini/nano)
+    if (!FIXED_TEMP_MODELS.has(modelName)) {
+      apiParams.temperature = 0.1;
+    }
+    // Note: GPT-5 models don't support: top_p, logprobs, frequency_penalty, presence_penalty
+    
+    // Use safeCreate to handle max_tokens → max_completion_tokens conversion if needed
+    const completion = await safeCreate(apiParams);
     const apiCallTime = Date.now() - apiCallStart;
 
     const parseStart = Date.now();
@@ -498,7 +510,7 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
           raw_transcript: text,
           normalized_transcript: text,
           confidence: 0.95,
-          source: DEFAULT_TEXT_MODEL
+          source: modelName
         }));
         
         return {
@@ -508,7 +520,7 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
           raw_transcript: text,
           normalized_transcript: text,
           confidence: 0.95,
-          source: DEFAULT_TEXT_MODEL
+          source: modelName
         };
       }
       // If mixed types, return only first non-reminder task (fall through to single item)
@@ -527,7 +539,7 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
           raw_transcript: text,
           normalized_transcript: text,
           confidence: 0.95,
-          source: DEFAULT_TEXT_MODEL
+          source: modelName
         };
       }
     }
@@ -545,13 +557,18 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
       raw_transcript: text,
       normalized_transcript: text,
       confidence: 0.95,
-      source: DEFAULT_TEXT_MODEL
+      source: modelName
     };
     
   } catch (error) {
-    console.error(`[${requestId}] GPT-4.1-mini error:`, error);
+    console.error(`[${requestId}] GPT parsing error (${modelName}):`, error);
     throw new Error(`GPT parsing failed: ${error.message}`);
   }
+}
+
+// Wrapper for GPT-4.1-mini (backward compatibility)
+async function parseWithGPT41(text, requestId, nowISO, langHint = 'lv') {
+  return parseWithGPT(text, requestId, nowISO, langHint, DEFAULT_TEXT_MODEL);
 }
 
 function normalizeForParser(text) {
@@ -1066,6 +1083,98 @@ app.post("/test-parse", async (req, res) => {
       }
     } catch (error) {
       console.error(`❌ [TEST] GPT-4.1-mini parsing failed:`, error);
+      return res.status(500).json({ error: 'Parsing failed', message: error.message });
+    }
+    
+  } catch (error) {
+    console.error("[TEST] Error:", error);
+    return res.status(500).json({ error: "test_failed", details: String(error) });
+  }
+});
+
+// Test endpoint for GPT-5 mini
+app.post("/test-parse-gpt5-mini", async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ error: "missing_text", message: "Pievienojiet 'text' lauku" });
+    }
+
+    const raw = text.trim();
+    const norm = normalizeTranscript(raw, 'lv');
+    const analyzedText = norm;
+    const langHint = 'lv';
+    const nowISO = toRigaISO(new Date());
+    const modelName = 'gpt-5-mini';
+    
+    console.log(`🧭 [TEST] ${modelName} attempting parse: "${analyzedText}"`);
+    try {
+      const parsed = await parseWithGPT(analyzedText, req.headers['x-request-id'] || 'test', nowISO, langHint, modelName);
+      if (parsed) {
+        console.log(`🧭 [TEST] ${modelName} used: type=${parsed.type}`);
+        parsed.raw_transcript = raw;
+        parsed.normalized_transcript = norm;
+        parsed.analyzed_transcript = analyzedText;
+        parsed.test_mode = true;
+        parsed.model_used = modelName;
+        return res.json(parsed);
+      }
+    } catch (error) {
+      console.error(`❌ [TEST] ${modelName} parsing failed:`, error);
+      // If model not found, return helpful error
+      if (error.message?.includes('model') || error.message?.includes('not found')) {
+        return res.status(404).json({ 
+          error: 'model_not_found', 
+          message: `${modelName} may not be available in your region yet`,
+          details: error.message 
+        });
+      }
+      return res.status(500).json({ error: 'Parsing failed', message: error.message });
+    }
+    
+  } catch (error) {
+    console.error("[TEST] Error:", error);
+    return res.status(500).json({ error: "test_failed", details: String(error) });
+  }
+});
+
+// Test endpoint for GPT-5 nano
+app.post("/test-parse-gpt5-nano", async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ error: "missing_text", message: "Pievienojiet 'text' lauku" });
+    }
+
+    const raw = text.trim();
+    const norm = normalizeTranscript(raw, 'lv');
+    const analyzedText = norm;
+    const langHint = 'lv';
+    const nowISO = toRigaISO(new Date());
+    const modelName = 'gpt-5-nano';
+    
+    console.log(`🧭 [TEST] ${modelName} attempting parse: "${analyzedText}"`);
+    try {
+      const parsed = await parseWithGPT(analyzedText, req.headers['x-request-id'] || 'test', nowISO, langHint, modelName);
+      if (parsed) {
+        console.log(`🧭 [TEST] ${modelName} used: type=${parsed.type}`);
+        parsed.raw_transcript = raw;
+        parsed.normalized_transcript = norm;
+        parsed.analyzed_transcript = analyzedText;
+        parsed.test_mode = true;
+        parsed.model_used = modelName;
+        return res.json(parsed);
+      }
+    } catch (error) {
+      console.error(`❌ [TEST] ${modelName} parsing failed:`, error);
+      // If model not found, return helpful error
+      if (error.message?.includes('model') || error.message?.includes('not found')) {
+        return res.status(404).json({ 
+          error: 'model_not_found', 
+          message: `${modelName} may not be available in your region yet`,
+          details: error.message 
+        });
+      }
       return res.status(500).json({ error: 'Parsing failed', message: error.message });
     }
     
