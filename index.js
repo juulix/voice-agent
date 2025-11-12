@@ -35,9 +35,9 @@ const FIXED_TEMP_MODELS = new Set([
 ]);
 
 // Noklusētie modeļi (vieglāk mainīt vienuviet)
-// TESTING: GPT-5-nano (ar max_output_tokens un labāku JSON extraction)
-const DEFAULT_TEXT_MODEL = process.env.GPT_MODEL || "gpt-5-nano";   // galvenajām operācijām
-const CHEAP_TASK_MODEL  = process.env.GPT_MODEL || "gpt-5-nano";    // kopsavilkumi/klasifikācija u.tml.
+// TESTING: GPT-5-mini (GPT-5-nano atgrieza tukšu atbildi, nav gatavs)
+const DEFAULT_TEXT_MODEL = process.env.GPT_MODEL || "gpt-5-mini";   // galvenajām operācijām
+const CHEAP_TASK_MODEL  = process.env.GPT_MODEL || "gpt-5-mini";    // kopsavilkumi/klasifikācija u.tml.
 
 console.log(`✅ Using GPT model: ${DEFAULT_TEXT_MODEL}`);
 
@@ -110,39 +110,11 @@ async function safeCreate(params) {
     const msg = e?.error?.message || e?.message || "";
     
     // 1) Auto-labojums: max_tokens → max_completion_tokens vai max_output_tokens
-    // Īpaša apstrāde GPT-5-nano: neatbalsta max_output_tokens
-    if (params.model === 'gpt-5-nano' && (msg.includes("max_output_tokens") || msg.includes("Unknown parameter"))) {
-      const clone = { ...params };
-      // Noņemam max_output_tokens un izmantojam max_completion_tokens
-      if ('max_output_tokens' in clone) {
-        delete clone.max_output_tokens;
-        clone.max_completion_tokens = 1000;
-      }
-      if ('max_tokens' in clone) {
-        clone.max_completion_tokens = clone.max_tokens;
-        delete clone.max_tokens;
-      }
-      console.log(`⚠️ Auto-fixed: removed max_output_tokens, using max_completion_tokens for ${params.model}`);
-      return await openai.chat.completions.create(clone);
-    }
-    
     if (msg.includes("max_tokens") || msg.includes("max_completion_tokens") || msg.includes("max_output_tokens")) {
       const clone = { ...params };
       
-      // GPT-5-nano izmanto max_completion_tokens (kā GPT-4)
-      if (params.model === 'gpt-5-nano') {
-        if ('max_tokens' in clone) {
-          clone.max_completion_tokens = clone.max_tokens;
-          delete clone.max_tokens;
-        }
-        if ('max_output_tokens' in clone) {
-          clone.max_completion_tokens = clone.max_output_tokens;
-          delete clone.max_output_tokens;
-        }
-        console.log(`⚠️ Auto-fixed max_tokens → max_completion_tokens for ${params.model}`);
-        return await openai.chat.completions.create(clone);
-      } else if (params.model?.startsWith('gpt-5')) {
-        // GPT-5-mini var mēģināt ar max_output_tokens
+      // GPT-5 modeļi izmanto max_output_tokens
+      if (params.model?.startsWith('gpt-5')) {
         if ('max_tokens' in clone) {
           clone.max_output_tokens = clone.max_tokens;
           delete clone.max_tokens;
@@ -158,6 +130,10 @@ async function safeCreate(params) {
         if ('max_tokens' in clone) {
           clone.max_completion_tokens = clone.max_tokens;
           delete clone.max_tokens;
+        }
+        if ('max_output_tokens' in clone) {
+          clone.max_completion_tokens = clone.max_output_tokens;
+          delete clone.max_output_tokens;
         }
         console.log(`⚠️ Auto-fixed max_tokens → max_completion_tokens for ${params.model}`);
         return await openai.chat.completions.create(clone);
@@ -513,13 +489,8 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
       response_format: { type: "json_object" }
     };
     
-    // GPT-5-nano neatbalsta max_output_tokens, izmantojam max_completion_tokens
-    // GPT-5-mini var atbalstīt max_output_tokens, bet GPT-5-nano ne
-    if (modelName === 'gpt-5-nano') {
-      // GPT-5-nano izmanto max_completion_tokens (kā GPT-4)
-      apiParams.max_completion_tokens = 1000;
-    } else if (modelName.startsWith('gpt-5')) {
-      // GPT-5-mini var mēģināt ar max_output_tokens
+    // GPT-5 modeļi izmanto max_output_tokens (nevis max_completion_tokens)
+    if (modelName.startsWith('gpt-5')) {
       apiParams.max_output_tokens = 1000;
     } else {
       // GPT-4 modeļi izmanto max_completion_tokens
@@ -533,15 +504,67 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
     // Note: GPT-5 models don't support: top_p, logprobs, frequency_penalty, presence_penalty
     
     // Use safeCreate to handle max_tokens → max_completion_tokens conversion if needed
-    const completion = await safeCreate(apiParams);
-    const apiCallTime = Date.now() - apiCallStart;
+    let completion = await safeCreate(apiParams);
+    let apiCallTime = Date.now() - apiCallStart;
+
+    // Log completion structure for debugging
+    if (FIXED_TEMP_MODELS.has(modelName)) {
+      console.log(`[${requestId}] ${modelName} completion structure:`, {
+        choices_count: completion.choices?.length || 0,
+        finish_reason: completion.choices?.[0]?.finish_reason,
+        has_content: !!completion.choices?.[0]?.message?.content,
+        content_length: completion.choices?.[0]?.message?.content?.length || 0
+      });
+    }
 
     const parseStart = Date.now();
-    let response = completion.choices[0].message.content;
+    let response = completion.choices[0]?.message?.content;
     
-    // Check if response is empty or null
+    // Retry logic: ja GPT-5 modelis atgriež tukšu choices, mēģinām vēlreiz ar lielāku max_output_tokens
+    if ((!response || !response.trim()) && modelName.startsWith('gpt-5')) {
+      console.log(`[${requestId}] ⚠️ Empty response from ${modelName}, retrying with larger max_output_tokens and explicit JSON instruction`);
+      
+      // Retry ar lielāku max_output_tokens un skaidrāku sistēmas norādi
+      const retryParams = {
+        ...apiParams,
+        max_output_tokens: 2000, // Palielinām no 1000 uz 2000
+        messages: [
+          { 
+            role: 'system', 
+            content: `${systemPrompt}\n\nCRITICAL: Return a single valid JSON object. No prose, no explanations, only JSON.`
+          },
+          { role: 'user', content: text }
+        ]
+      };
+      
+      try {
+        completion = await safeCreate(retryParams);
+        apiCallTime = Date.now() - apiCallStart; // Update total time
+        response = completion.choices[0]?.message?.content;
+        
+        if (response && response.trim()) {
+          console.log(`[${requestId}] ✅ Retry successful, got ${response.length} chars`);
+        } else {
+          console.error(`[${requestId}] ❌ Retry also returned empty response`);
+        }
+      } catch (retryError) {
+        console.error(`[${requestId}] Retry failed:`, retryError.message);
+      }
+    }
+    
+    // Check if response is still empty or null after retry
     if (!response || !response.trim()) {
-      console.error(`[${requestId}] Empty response from ${modelName}`);
+      console.error(`[${requestId}] Empty response from ${modelName} (after retry if applicable)`);
+      console.error(`[${requestId}] Completion object:`, JSON.stringify({
+        id: completion.id,
+        model: completion.model,
+        choices: completion.choices?.map(c => ({
+          index: c.index,
+          finish_reason: c.finish_reason,
+          message_role: c.message?.role,
+          message_content: c.message?.content ? `[${c.message.content.length} chars]` : null
+        }))
+      }, null, 2));
       throw new Error(`Empty response from ${modelName}`);
     }
     
