@@ -35,9 +35,9 @@ const FIXED_TEMP_MODELS = new Set([
 ]);
 
 // Noklusētie modeļi (vieglāk mainīt vienuviet)
-// TESTING: GPT-5-nano (ja nedarbosies, atgriezt uz gpt-4.1-mini)
-const DEFAULT_TEXT_MODEL = process.env.GPT_MODEL || "gpt-5-nano";   // galvenajām operācijām
-const CHEAP_TASK_MODEL  = process.env.GPT_MODEL || "gpt-5-nano";    // kopsavilkumi/klasifikācija u.tml.
+// TESTING: GPT-5-mini (GPT-5-nano bija pārāk mazs, neatgrieza pilnu JSON)
+const DEFAULT_TEXT_MODEL = process.env.GPT_MODEL || "gpt-5-mini";   // galvenajām operācijām
+const CHEAP_TASK_MODEL  = process.env.GPT_MODEL || "gpt-5-mini";    // kopsavilkumi/klasifikācija u.tml.
 
 console.log(`✅ Using GPT model: ${DEFAULT_TEXT_MODEL}`);
 
@@ -109,15 +109,30 @@ async function safeCreate(params) {
   } catch (e) {
     const msg = e?.error?.message || e?.message || "";
     
-    // 1) Auto-labojums: max_tokens → max_completion_tokens
-    if (msg.includes("max_tokens") && msg.includes("max_completion_tokens")) {
+    // 1) Auto-labojums: max_tokens → max_completion_tokens vai max_output_tokens
+    if (msg.includes("max_tokens") || msg.includes("max_completion_tokens") || msg.includes("max_output_tokens")) {
       const clone = { ...params };
-      if ('max_tokens' in clone) {
-        clone.max_completion_tokens = clone.max_tokens;
-        delete clone.max_tokens;
+      // GPT-5 modeļi izmanto max_output_tokens
+      if (params.model?.startsWith('gpt-5')) {
+        if ('max_tokens' in clone) {
+          clone.max_output_tokens = clone.max_tokens;
+          delete clone.max_tokens;
+        }
+        if ('max_completion_tokens' in clone) {
+          clone.max_output_tokens = clone.max_completion_tokens;
+          delete clone.max_completion_tokens;
+        }
+        console.log(`⚠️ Auto-fixed max_tokens → max_output_tokens for ${params.model}`);
+        return await openai.chat.completions.create(clone);
+      } else {
+        // GPT-4 modeļi izmanto max_completion_tokens
+        if ('max_tokens' in clone) {
+          clone.max_completion_tokens = clone.max_tokens;
+          delete clone.max_tokens;
+        }
+        console.log(`⚠️ Auto-fixed max_tokens → max_completion_tokens for ${params.model}`);
+        return await openai.chat.completions.create(clone);
       }
-      console.log(`⚠️ Auto-fixed max_tokens → max_completion_tokens for ${params.model}`);
-      return await openai.chat.completions.create(clone);
     }
     
     // 2) Auto-labojums: izmet temperature, ja neatbalstīts
@@ -466,9 +481,15 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
         { role: 'system', content: systemPrompt },
         { role: 'user', content: text }
       ],
-      max_tokens: 1000, // Increased for multiple tasks support
       response_format: { type: "json_object" }
     };
+    
+    // GPT-5 modeļi izmanto max_output_tokens, GPT-4 izmanto max_completion_tokens
+    if (modelName.startsWith('gpt-5')) {
+      apiParams.max_output_tokens = 1000;
+    } else {
+      apiParams.max_completion_tokens = 1000;
+    }
     
     // Only add temperature if model supports it (not GPT-5 mini/nano)
     if (!FIXED_TEMP_MODELS.has(modelName)) {
@@ -481,12 +502,47 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
     const apiCallTime = Date.now() - apiCallStart;
 
     const parseStart = Date.now();
-    let response = completion.choices[0].message.content.trim();
+    let response = completion.choices[0].message.content;
     
-    // Clean markdown if present
-    response = response.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    // Check if response is empty or null
+    if (!response || !response.trim()) {
+      console.error(`[${requestId}] Empty response from ${modelName}`);
+      throw new Error(`Empty response from ${modelName}`);
+    }
     
-    const parsed = JSON.parse(response);
+    response = response.trim();
+    
+    // Log raw response for debugging (first 500 chars)
+    if (FIXED_TEMP_MODELS.has(modelName)) {
+      console.log(`[${requestId}] ${modelName} raw response (first 500 chars): ${response.substring(0, 500)}`);
+    }
+    
+    // Extract JSON from response (ja modelis atgriež tekstu + JSON)
+    // 1. Mēģinām atrast JSON objektu ar regex
+    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      response = jsonMatch[0];
+      console.log(`[${requestId}] Extracted JSON from response (${response.length} chars)`);
+    } else {
+      // 2. Ja nav JSON objekta, mēģinām noņemt markdown
+      response = response.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    }
+    
+    // Check if response is still empty after cleaning
+    if (!response || response.length === 0) {
+      console.error(`[${requestId}] Empty response after cleaning from ${modelName}`);
+      throw new Error(`Empty response after cleaning from ${modelName}`);
+    }
+    
+    let parsed;
+    try {
+      parsed = JSON.parse(response);
+    } catch (parseError) {
+      console.error(`[${requestId}] JSON parse error from ${modelName}:`, parseError.message);
+      console.error(`[${requestId}] Response content (full):`, response);
+      console.error(`[${requestId}] Response length:`, response.length);
+      throw new Error(`Invalid JSON from ${modelName}: ${parseError.message}`);
+    }
     const parseTime = Date.now() - parseStart;
     
     const totalGptTime = Date.now() - gptStart;
@@ -563,6 +619,18 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
     
   } catch (error) {
     console.error(`[${requestId}] GPT parsing error (${modelName}):`, error);
+    
+    // Fallback: ja GPT-5-nano neizdodas, mēģinām GPT-4.1-mini
+    if (modelName === 'gpt-5-nano' && DEFAULT_TEXT_MODEL === 'gpt-5-nano') {
+      console.log(`[${requestId}] ⚠️ GPT-5-nano failed, falling back to GPT-4.1-mini`);
+      try {
+        return await parseWithGPT(text, requestId, nowISO, langHint, 'gpt-4.1-mini');
+      } catch (fallbackError) {
+        console.error(`[${requestId}] Fallback to GPT-4.1-mini also failed:`, fallbackError);
+        throw new Error(`GPT parsing failed (nano + fallback): ${error.message}`);
+      }
+    }
+    
     throw new Error(`GPT parsing failed: ${error.message}`);
   }
 }
