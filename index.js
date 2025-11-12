@@ -112,8 +112,21 @@ async function safeCreate(params) {
     // 1) Auto-labojums: max_tokens → max_completion_tokens vai max_output_tokens
     if (msg.includes("max_tokens") || msg.includes("max_completion_tokens") || msg.includes("max_output_tokens")) {
       const clone = { ...params };
-      // GPT-5 modeļi izmanto max_output_tokens
-      if (params.model?.startsWith('gpt-5')) {
+      
+      // GPT-5-nano izmanto max_completion_tokens (kā GPT-4)
+      if (params.model === 'gpt-5-nano') {
+        if ('max_tokens' in clone) {
+          clone.max_completion_tokens = clone.max_tokens;
+          delete clone.max_tokens;
+        }
+        if ('max_output_tokens' in clone) {
+          clone.max_completion_tokens = clone.max_output_tokens;
+          delete clone.max_output_tokens;
+        }
+        console.log(`⚠️ Auto-fixed max_tokens → max_completion_tokens for ${params.model}`);
+        return await openai.chat.completions.create(clone);
+      } else if (params.model?.startsWith('gpt-5')) {
+        // GPT-5-mini var mēģināt ar max_output_tokens
         if ('max_tokens' in clone) {
           clone.max_output_tokens = clone.max_tokens;
           delete clone.max_tokens;
@@ -484,10 +497,16 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
       response_format: { type: "json_object" }
     };
     
-    // GPT-5 modeļi izmanto max_output_tokens, GPT-4 izmanto max_completion_tokens
-    if (modelName.startsWith('gpt-5')) {
+    // GPT-5-nano neatbalsta max_output_tokens, izmantojam max_completion_tokens
+    // GPT-5-mini var atbalstīt max_output_tokens, bet GPT-5-nano ne
+    if (modelName === 'gpt-5-nano') {
+      // GPT-5-nano izmanto max_completion_tokens (kā GPT-4)
+      apiParams.max_completion_tokens = 1000;
+    } else if (modelName.startsWith('gpt-5')) {
+      // GPT-5-mini var mēģināt ar max_output_tokens
       apiParams.max_output_tokens = 1000;
     } else {
+      // GPT-4 modeļi izmanto max_completion_tokens
       apiParams.max_completion_tokens = 1000;
     }
     
