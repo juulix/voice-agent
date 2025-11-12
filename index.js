@@ -109,35 +109,23 @@ async function safeCreate(params) {
   } catch (e) {
     const msg = e?.error?.message || e?.message || "";
     
-    // 1) Auto-labojums: max_tokens → max_completion_tokens vai max_output_tokens
+    // 1) Auto-labojums: max_tokens → max_completion_tokens
+    // Visi modeļi (GPT-4 un GPT-5) izmanto max_completion_tokens
     if (msg.includes("max_tokens") || msg.includes("max_completion_tokens") || msg.includes("max_output_tokens")) {
       const clone = { ...params };
       
-      // GPT-5 modeļi izmanto max_output_tokens
-      if (params.model?.startsWith('gpt-5')) {
-        if ('max_tokens' in clone) {
-          clone.max_output_tokens = clone.max_tokens;
-          delete clone.max_tokens;
-        }
-        if ('max_completion_tokens' in clone) {
-          clone.max_output_tokens = clone.max_completion_tokens;
-          delete clone.max_completion_tokens;
-        }
-        console.log(`⚠️ Auto-fixed max_tokens → max_output_tokens for ${params.model}`);
-        return await openai.chat.completions.create(clone);
-      } else {
-        // GPT-4 modeļi izmanto max_completion_tokens
-        if ('max_tokens' in clone) {
-          clone.max_completion_tokens = clone.max_tokens;
-          delete clone.max_tokens;
-        }
-        if ('max_output_tokens' in clone) {
-          clone.max_completion_tokens = clone.max_output_tokens;
-          delete clone.max_output_tokens;
-        }
-        console.log(`⚠️ Auto-fixed max_tokens → max_completion_tokens for ${params.model}`);
-        return await openai.chat.completions.create(clone);
+      // Visi modeļi izmanto max_completion_tokens
+      if ('max_tokens' in clone) {
+        clone.max_completion_tokens = clone.max_tokens;
+        delete clone.max_tokens;
       }
+      // Noņemam max_output_tokens, ja tas ir (nav atbalstīts)
+      if ('max_output_tokens' in clone) {
+        clone.max_completion_tokens = clone.max_output_tokens || clone.max_completion_tokens || 1000;
+        delete clone.max_output_tokens;
+      }
+      console.log(`⚠️ Auto-fixed max_tokens → max_completion_tokens for ${params.model}`);
+      return await openai.chat.completions.create(clone);
     }
     
     // 2) Auto-labojums: izmet temperature, ja neatbalstīts
@@ -489,13 +477,9 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
       response_format: { type: "json_object" }
     };
     
-    // GPT-5 modeļi izmanto max_output_tokens (nevis max_completion_tokens)
-    if (modelName.startsWith('gpt-5')) {
-      apiParams.max_output_tokens = 1000;
-    } else {
-      // GPT-4 modeļi izmanto max_completion_tokens
-      apiParams.max_completion_tokens = 1000;
-    }
+    // GPT-5 modeļi izmanto max_completion_tokens (kā GPT-4)
+    // Nav max_output_tokens atbalsta GPT-5 modeļiem
+    apiParams.max_completion_tokens = 1000;
     
     // Only add temperature if model supports it (not GPT-5 mini/nano)
     if (!FIXED_TEMP_MODELS.has(modelName)) {
@@ -520,14 +504,14 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
     const parseStart = Date.now();
     let response = completion.choices[0]?.message?.content;
     
-    // Retry logic: ja GPT-5 modelis atgriež tukšu choices, mēģinām vēlreiz ar lielāku max_output_tokens
+    // Retry logic: ja GPT-5 modelis atgriež tukšu choices, mēģinām vēlreiz ar lielāku max_completion_tokens
     if ((!response || !response.trim()) && modelName.startsWith('gpt-5')) {
-      console.log(`[${requestId}] ⚠️ Empty response from ${modelName}, retrying with larger max_output_tokens and explicit JSON instruction`);
+      console.log(`[${requestId}] ⚠️ Empty response from ${modelName}, retrying with larger max_completion_tokens and explicit JSON instruction`);
       
-      // Retry ar lielāku max_output_tokens un skaidrāku sistēmas norādi
+      // Retry ar lielāku max_completion_tokens un skaidrāku sistēmas norādi
       const retryParams = {
         ...apiParams,
-        max_output_tokens: 2000, // Palielinām no 1000 uz 2000
+        max_completion_tokens: 2000, // Palielinām no 1000 uz 2000
         messages: [
           { 
             role: 'system', 
