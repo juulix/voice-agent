@@ -110,6 +110,22 @@ async function safeCreate(params) {
     const msg = e?.error?.message || e?.message || "";
     
     // 1) Auto-labojums: max_tokens → max_completion_tokens vai max_output_tokens
+    // Īpaša apstrāde GPT-5-nano: neatbalsta max_output_tokens
+    if (params.model === 'gpt-5-nano' && (msg.includes("max_output_tokens") || msg.includes("Unknown parameter"))) {
+      const clone = { ...params };
+      // Noņemam max_output_tokens un izmantojam max_completion_tokens
+      if ('max_output_tokens' in clone) {
+        delete clone.max_output_tokens;
+        clone.max_completion_tokens = 1000;
+      }
+      if ('max_tokens' in clone) {
+        clone.max_completion_tokens = clone.max_tokens;
+        delete clone.max_tokens;
+      }
+      console.log(`⚠️ Auto-fixed: removed max_output_tokens, using max_completion_tokens for ${params.model}`);
+      return await openai.chat.completions.create(clone);
+    }
+    
     if (msg.includes("max_tokens") || msg.includes("max_completion_tokens") || msg.includes("max_output_tokens")) {
       const clone = { ...params };
       
