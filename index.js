@@ -35,8 +35,9 @@ const FIXED_TEMP_MODELS = new Set([
 ]);
 
 // Noklusētie modeļi (vieglāk mainīt vienuviet)
-const DEFAULT_TEXT_MODEL = process.env.GPT_MODEL || "gpt-4.1-mini";   // galvenajām operācijām
-const CHEAP_TASK_MODEL  = process.env.GPT_MODEL || "gpt-4.1-mini";    // kopsavilkumi/klasifikācija u.tml.
+// TESTING: GPT-5-nano (ja nedarbosies, atgriezt uz gpt-4.1-mini)
+const DEFAULT_TEXT_MODEL = process.env.GPT_MODEL || "gpt-5-nano";   // galvenajām operācijām
+const CHEAP_TASK_MODEL  = process.env.GPT_MODEL || "gpt-5-nano";    // kopsavilkumi/klasifikācija u.tml.
 
 console.log(`✅ Using GPT model: ${DEFAULT_TEXT_MODEL}`);
 
@@ -1378,7 +1379,15 @@ app.post("/ingest-audio", async (req, res) => {
     const gptParseStart = Date.now();
     let parsed;
     try {
-      parsed = await parseWithGPT41(norm, req.requestId, nowISO, langHint);
+      // Testa režīms: ja ir X-Test-Model header, izmanto to modeli
+      const testModel = req.header("X-Test-Model");
+      const modelToUse = testModel || DEFAULT_TEXT_MODEL;
+      
+      if (testModel) {
+        console.log(`🧪 [TEST MODE] Using model: ${testModel}`);
+      }
+      
+      parsed = await parseWithGPT(norm, req.requestId, nowISO, langHint, modelToUse);
       console.timeEnd(`[${req.requestId}] gpt-parse`);
       timings.gptParse = Date.now() - gptParseStart;
       lastTime = Date.now();
