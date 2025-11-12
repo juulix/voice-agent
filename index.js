@@ -35,9 +35,9 @@ const FIXED_TEMP_MODELS = new Set([
 ]);
 
 // Noklusētie modeļi (vieglāk mainīt vienuviet)
-// TESTING: GPT-5-nano (ar labotajiem parametriem - max_completion_tokens)
-const DEFAULT_TEXT_MODEL = process.env.GPT_MODEL || "gpt-5-nano";   // galvenajām operācijām
-const CHEAP_TASK_MODEL  = process.env.GPT_MODEL || "gpt-5-nano";    // kopsavilkumi/klasifikācija u.tml.
+// GPT-5-nano ir pārāk lēns (9-16s vs 1-3s GPT-4.1-mini), atgriezts uz GPT-4.1-mini
+const DEFAULT_TEXT_MODEL = process.env.GPT_MODEL || "gpt-4.1-mini";   // galvenajām operācijām
+const CHEAP_TASK_MODEL  = process.env.GPT_MODEL || "gpt-4.1-mini";    // kopsavilkumi/klasifikācija u.tml.
 
 console.log(`✅ Using GPT model: ${DEFAULT_TEXT_MODEL}`);
 
@@ -478,11 +478,12 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
     };
     
     // GPT-5 modeļi izmanto max_completion_tokens (kā GPT-4)
-    // GPT-5-nano vajag lielāku limit (2000), lai izvairītos no finish_reason: 'length'
+    // Nav strikti ierobežojuma - JSON atbilde ir īsa (~200 tokeni), bet iestatām 4000 drošībai
+    // GPT-5-nano vajag vairāk tokenu, lai izvairītos no finish_reason: 'length'
     if (modelName === 'gpt-5-nano') {
-      apiParams.max_completion_tokens = 2000;
+      apiParams.max_completion_tokens = 4000; // Palielināts no 2000, lai būtu drošāk
     } else {
-      apiParams.max_completion_tokens = 1000;
+      apiParams.max_completion_tokens = 2000; // Palielināts no 1000 visiem citiem modeļiem
     }
     
     // Only add temperature if model supports it (not GPT-5 mini/nano)
