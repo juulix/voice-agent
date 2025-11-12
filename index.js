@@ -35,9 +35,9 @@ const FIXED_TEMP_MODELS = new Set([
 ]);
 
 // Noklusētie modeļi (vieglāk mainīt vienuviet)
-// TESTING: GPT-5-mini (GPT-5-nano atgrieza tukšu atbildi, nav gatavs)
-const DEFAULT_TEXT_MODEL = process.env.GPT_MODEL || "gpt-5-mini";   // galvenajām operācijām
-const CHEAP_TASK_MODEL  = process.env.GPT_MODEL || "gpt-5-mini";    // kopsavilkumi/klasifikācija u.tml.
+// TESTING: GPT-5-nano (ar labotajiem parametriem - max_completion_tokens)
+const DEFAULT_TEXT_MODEL = process.env.GPT_MODEL || "gpt-5-nano";   // galvenajām operācijām
+const CHEAP_TASK_MODEL  = process.env.GPT_MODEL || "gpt-5-nano";    // kopsavilkumi/klasifikācija u.tml.
 
 console.log(`✅ Using GPT model: ${DEFAULT_TEXT_MODEL}`);
 
