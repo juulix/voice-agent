@@ -267,3 +267,5 @@ Pēc katras optimizācijas:
 
 **Paredzamais rezultāts:** 12-20% ātrāka atbilde bez kvalitātes samazināšanas
 
+
+
