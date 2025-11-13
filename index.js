@@ -178,6 +178,22 @@ db.serialize(() => {
   db.run(`CREATE INDEX IF NOT EXISTS idx_user_month ON quota_usage(user_id, month_key)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_month_key ON quota_usage(month_key)`);
   
+  // Top-ups table for PRO plan users
+  db.run(`CREATE TABLE IF NOT EXISTS top_ups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    month_key TEXT NOT NULL,
+    amount_purchased INTEGER NOT NULL,
+    amount_remaining INTEGER NOT NULL,
+    purchase_date TEXT NOT NULL,
+    transaction_id TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, month_key, transaction_id)
+  )`);
+  
+  // Index for top-ups
+  db.run(`CREATE INDEX IF NOT EXISTS idx_top_ups_user_month 
+    ON top_ups(user_id, month_key)`);
   
   console.log('✅ Database optimized and indexes created');
 });
@@ -762,13 +778,41 @@ async function getUserUsage(userId, planHeader) {
                 reject(err);
                 return;
               }
+              // Calculate top-ups for PRO plan (even for new records)
+              let topUpRemaining = 0;
+              if (limits.plan === "pro") {
+                db.all(
+                  `SELECT SUM(amount_remaining) as total_remaining 
+                   FROM top_ups 
+                   WHERE user_id = ? AND month_key = ? AND amount_remaining > 0`,
+                  [userId, mKey],
+                  (err, topUpRows) => {
+                    if (!err && topUpRows && topUpRows.length > 0) {
+                      topUpRemaining = topUpRows[0].total_remaining || 0;
+                    }
+                    
+                    resolve({
+                      u: {
+                        plan: limits.plan,
+                        daily: { dayKey: today, used: 0, graceUsed: 0 },
+                        monthly: { monthKey: mKey, used: 0 }
+                      },
+                      limits,
+                      topUpRemaining
+                    });
+                  }
+                );
+                return; // Early return
+              }
+              
               resolve({
                 u: {
                   plan: limits.plan,
                   daily: { dayKey: today, used: 0, graceUsed: 0 },
                   monthly: { monthKey: mKey, used: 0 }
                 },
-                limits
+                limits,
+                topUpRemaining: 0
               });
             }
           );
@@ -781,13 +825,41 @@ async function getUserUsage(userId, planHeader) {
             );
           }
           
+          // Calculate top-ups for PRO plan
+          let topUpRemaining = 0;
+          if (limits.plan === "pro") {
+            db.all(
+              `SELECT SUM(amount_remaining) as total_remaining 
+               FROM top_ups 
+               WHERE user_id = ? AND month_key = ? AND amount_remaining > 0`,
+              [userId, mKey],
+              (err, topUpRows) => {
+                if (!err && topUpRows && topUpRows.length > 0) {
+                  topUpRemaining = topUpRows[0].total_remaining || 0;
+                }
+                
+                resolve({
+                  u: {
+                    plan: limits.plan,
+                    daily: { dayKey: today, used: row.daily_used, graceUsed: row.daily_grace_used },
+                    monthly: { monthKey: mKey, used: row.monthly_used }
+                  },
+                  limits,
+                  topUpRemaining
+                });
+              }
+            );
+            return; // Early return, resolve happens in callback
+          }
+          
           resolve({
             u: {
               plan: limits.plan,
               daily: { dayKey: row.day_key, used: row.daily_used, graceUsed: row.daily_grace_used },
               monthly: { monthKey: row.month_key, used: row.monthly_used }
             },
-            limits
+            limits,
+            topUpRemaining: 0
           });
         }
       }
@@ -811,7 +883,70 @@ async function calculateMonthlyUsage(userId, monthKey) {
   });
 }
 
-async function updateQuotaUsage(userId, plan, dailyUsed, dailyGraceUsed) {
+// Use top-up if monthly limit exceeded (for PRO plan)
+async function useTopUpIfNeeded(userId, monthKey, monthlyLimit) {
+  return new Promise((resolve, reject) => {
+    // Check if monthly usage exceeds base limit
+    calculateMonthlyUsage(userId, monthKey).then(totalMonthly => {
+      if (totalMonthly <= monthlyLimit) {
+        // Still within base limit, no top-up needed
+        resolve(0);
+        return;
+      }
+      
+      // Need to use top-ups
+      const topUpNeeded = totalMonthly - monthlyLimit;
+      
+      // Get available top-ups (oldest first)
+      db.all(
+        `SELECT id, amount_remaining 
+         FROM top_ups 
+         WHERE user_id = ? AND month_key = ? AND amount_remaining > 0
+         ORDER BY created_at ASC`,
+        [userId, monthKey],
+        (err, topUps) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          
+          if (!topUps || topUps.length === 0) {
+            resolve(0);
+            return;
+          }
+          
+          let remainingToUse = topUpNeeded;
+          let totalUsed = 0;
+          
+          // Use top-ups in order
+          const updatePromises = topUps.map(topUp => {
+            if (remainingToUse <= 0) return Promise.resolve();
+            
+            const useFromThis = Math.min(remainingToUse, topUp.amount_remaining);
+            remainingToUse -= useFromThis;
+            totalUsed += useFromThis;
+            
+            return new Promise((res, rej) => {
+              db.run(
+                `UPDATE top_ups 
+                 SET amount_remaining = amount_remaining - ? 
+                 WHERE id = ?`,
+                [useFromThis, topUp.id],
+                (err) => err ? rej(err) : res()
+              );
+            });
+          });
+          
+          Promise.all(updatePromises)
+            .then(() => resolve(totalUsed))
+            .catch(reject);
+        }
+      );
+    }).catch(reject);
+  });
+}
+
+async function updateQuotaUsage(userId, plan, dailyUsed, dailyGraceUsed, monthlyLimit) {
   const today = todayKeyRiga();
   const mKey = monthKeyRiga();
   
@@ -833,7 +968,12 @@ async function updateQuotaUsage(userId, plan, dailyUsed, dailyGraceUsed) {
             db.run(
               `UPDATE quota_usage SET monthly_used = ? WHERE user_id = ? AND month_key = ?`,
               [totalMonthly, userId, mKey],
-              () => resolve()
+              () => {
+                // Use top-ups if needed
+                useTopUpIfNeeded(userId, mKey, monthlyLimit)
+                  .then(() => resolve())
+                  .catch(reject);
+              }
             );
           }).catch(reject);
         } else {
@@ -1070,6 +1210,91 @@ app.get("/metrics", async (req, res) => {
 });
 
 
+/* ===== /purchase-topup ===== */
+app.post("/purchase-topup", async (req, res) => {
+  try {
+    const userId = req.header("X-User-Id") || "anon";
+    const planHdr = req.header("X-Plan") || "basic";
+    
+    // Only PRO users can purchase top-ups
+    if (planHdr.toLowerCase() !== "pro") {
+      return res.status(403).json({ 
+        error: "topup_not_available", 
+        message: "Top-ups are only available for PRO plan users",
+        requestId: req.requestId 
+      });
+    }
+    
+    const { transactionId } = req.body;
+    if (!transactionId) {
+      return res.status(400).json({ 
+        error: "transaction_id_required", 
+        requestId: req.requestId 
+      });
+    }
+    
+    const mKey = monthKeyRiga();
+    const topUpAmount = 150; // 150 requests per top-up
+    const purchaseDate = new Date().toISOString();
+    
+    // Check if transaction already exists
+    db.get(
+      `SELECT id FROM top_ups WHERE user_id = ? AND transaction_id = ?`,
+      [userId, transactionId],
+      (err, existing) => {
+        if (err) {
+          console.error("Top-up purchase error:", err);
+          return res.status(500).json({ 
+            error: "purchase_failed", 
+            requestId: req.requestId 
+          });
+        }
+        
+        if (existing) {
+          // Transaction already processed
+          return res.status(200).json({ 
+            success: true, 
+            message: "Transaction already processed",
+            topUpAmount,
+            requestId: req.requestId 
+          });
+        }
+        
+        // Insert new top-up
+        db.run(
+          `INSERT INTO top_ups (user_id, month_key, amount_purchased, amount_remaining, purchase_date, transaction_id)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [userId, mKey, topUpAmount, topUpAmount, purchaseDate, transactionId],
+          function(insertErr) {
+            if (insertErr) {
+              console.error("Top-up purchase insert error:", insertErr);
+              return res.status(500).json({ 
+                error: "purchase_failed", 
+                requestId: req.requestId 
+              });
+            }
+            
+            console.log(`✅ [${req.requestId}] Top-up purchased: user=${userId}, amount=${topUpAmount}, transaction=${transactionId}`);
+            
+            return res.status(200).json({
+              success: true,
+              topUpAmount,
+              topUpRemaining: topUpAmount,
+              requestId: req.requestId
+            });
+          }
+        );
+      }
+    );
+  } catch (error) {
+    console.error("Top-up purchase error:", error);
+    return res.status(500).json({ 
+      error: "purchase_failed", 
+      requestId: req.requestId 
+    });
+  }
+});
+
 /* ===== /quota ===== */
 const normalizeDaily = (n) => (n >= 999999 ? null : n);
 
@@ -1077,7 +1302,7 @@ app.get("/quota", async (req, res) => {
   try {
     const userId = req.header("X-User-Id") || "anon";
     const planHdr = req.header("X-Plan") || "basic";
-    const { u, limits } = await getUserUsage(userId, planHdr);
+    const { u, limits, topUpRemaining = 0 } = await getUserUsage(userId, planHdr);
 
     const dailyLimitNorm = normalizeDaily(limits.dailyLimit);
     const out = {
@@ -1093,7 +1318,12 @@ app.get("/quota", async (req, res) => {
     if (limits.plan === "pro") {
       out.monthlyLimit = limits.monthlyLimit;
       out.monthlyUsed = u.monthly.used;
-      out.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
+      const totalMonthlyAvailable = limits.monthlyLimit + topUpRemaining;
+      out.monthlyRemaining = Math.max(0, totalMonthlyAvailable - u.monthly.used);
+      out.topUpRemaining = topUpRemaining;
+      out.canPurchaseTopUp = true; // PRO users can always purchase
+      out.topUpPrice = 1.0; // 1 EUR for 150 requests
+      out.topUpAmount = 150; // 150 requests per top-up
     }
     return res.json(out);
   } catch (error) {
@@ -1369,7 +1599,7 @@ app.post("/ingest-audio", async (req, res) => {
     const userId = req.header("X-User-Id") || "anon";
     const planHdr = req.header("X-Plan") || "basic";
     const langHint = (req.header("X-Lang") || "lv").toLowerCase();
-    const { u, limits } = await getUserUsage(userId, planHdr);
+    const { u, limits, topUpRemaining = 0 } = await getUserUsage(userId, planHdr);
     console.timeEnd(`[${req.requestId}] getUserUsage`);
     timings.getUserUsage = Date.now() - getUserUsageStart;
     lastTime = Date.now();
@@ -1378,8 +1608,11 @@ app.post("/ingest-audio", async (req, res) => {
     if (u.daily.used >= limits.dailyLimit) {
       return res.status(429).json({ error: "quota_exceeded", plan: limits.plan });
     }
-    if (limits.plan === "pro" && u.monthly.used >= limits.monthlyLimit) {
-      return res.status(429).json({ error: "monthly_quota_exceeded", plan: limits.plan });
+    if (limits.plan === "pro") {
+      const totalMonthlyAvailable = limits.monthlyLimit + topUpRemaining;
+      if (u.monthly.used >= totalMonthlyAvailable) {
+        return res.status(429).json({ error: "monthly_quota_exceeded", plan: limits.plan });
+      }
     }
 
     // Multipart
@@ -1420,7 +1653,7 @@ app.post("/ingest-audio", async (req, res) => {
     // Minimāla runas aktivitāte (pirms maksas transkripcijas)
     if (vadActiveSeconds < 0.3 || recordingDurationSeconds < 0.6) {
       if (u.daily.graceUsed < GRACE_DAILY) u.daily.graceUsed += 1;
-      await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
+      await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed, limits.monthlyLimit || 0);
       databaseOperations.inc({ operation: "update", table: "quota_usage" }, 1);
       return res.status(422).json({ error: "no_speech_detected_client", details: { vadActiveSeconds, recordingDurationSeconds } });
     }
@@ -1466,7 +1699,7 @@ app.post("/ingest-audio", async (req, res) => {
 
     if (norm.length < 2 || score < 0.35) {
       if (u.daily.graceUsed < GRACE_DAILY) u.daily.graceUsed += 1;
-      await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
+      await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed, limits.monthlyLimit || 0);
       databaseOperations.inc({ operation: "update", table: "quota_usage" }, 1);
       return res.status(422).json({
         error: "low_confidence_transcript",
@@ -1588,7 +1821,7 @@ app.post("/ingest-audio", async (req, res) => {
     const quotaStart = Date.now();
     u.daily.used += 1;
     operationsTotal.inc({ status: "success", plan: limits.plan }, 1);
-    await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
+    await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed, limits.monthlyLimit || 0);
     console.timeEnd(`[${req.requestId}] quota-update`);
     timings.quotaUpdate = Date.now() - quotaStart;
     databaseOperations.inc({ operation: "update", table: "quota_usage" }, 1);
