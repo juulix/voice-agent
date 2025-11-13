@@ -126,3 +126,5 @@ Pēc katra testa salīdzini:
 3. Novērtēt ātrumu un izmaksas
 4. Ja rezultāti ir labi, var apsvērt pārslēgšanos uz GPT-5 mini/nano production
 
+
+
