@@ -447,11 +447,12 @@ PRASĪBAS:
 5. Ja VAIRĀKAS REMINDER: JSON: {type:"multiple", tasks:[{type:"reminder", description, notes, start, end, hasTime, items, lang}, ...]}
 
 NOTES FIELD LOĢIKA:
-- "notes" lauks ir TIKAI reminder tipam - calendar un shopping tipiem vienmēr notes = null
+- "notes" lauks ir pieejams reminder UN calendar tipiem - shopping tipam vienmēr notes = null
 - Reminder tipam: "notes" ir papildu konteksts/garāks teksts, kas neietilpst īsajā "description"
+- Calendar tipam: "notes" ir papildu informācija par notikumu (piem., "ar komandu", "jāņem dokumenti", "Zoom link")
 - Reminder tipam: Ja teksts ir garāks (>10 vārdi) → description = īss summary, notes = full text vai papildu detaļas
-- Reminder tipam: Ja ir papildu konteksts pēc galvenās darbības → notes field
-- Reminder tipam: Ja vienkāršs reminder → notes = null
+- Calendar tipam: Ja ir papildu informācija pēc galvenās darbības (piem., "ar piezīmi ka...", "piezīmē ka...") → notes field
+- Ja vienkāršs reminder vai calendar bez papildu informācijas → notes = null
 - Reminder tipam: Trigger vārdi priekš "inbox reminder" (bez due date): "pieraksti", "piezīme", "ideja", "note", "atceros"
 
 LAIKA LOĢIKA:
@@ -485,6 +486,9 @@ Input: "Atgādini man rīt 9 zvanīt klientam Jānim un apspriest budžetu"
 
 Input: "20. novembrī pulksten 14 budžeta izskatīšana"
 {"type":"calendar","description":"Budžeta izskatīšana","notes":null,"start":"2025-11-20T14:00:00+02:00","end":"2025-11-20T15:00:00+02:00","hasTime":true,"items":null,"lang":"lv","corrected_input":null}
+
+Input: "pievieno sapulci rīt plkst 2 ar piezīmi ka būs ar komandu"
+{"type":"calendar","description":"Sapulce","notes":"Ar komandu","start":"${tomorrowDate}T14:00:00+02:00","end":"${tomorrowDate}T15:00:00+02:00","hasTime":true,"items":null,"lang":"lv","corrected_input":null}
 
 Input: "pievieno piens, maize, olas"
 {"type":"shopping","description":"Pirkumi","notes":null,"start":null,"end":null,"hasTime":false,"items":"piens, maize, olas","lang":"lv","corrected_input":null}
@@ -1065,6 +1069,10 @@ const EVENT_SCHEMA = {
       description: {
         type: "string",
         minLength: 1
+      },
+      notes: {
+        type: "string",
+        description: "Optional notes for reminder and calendar types"
       },
       start: {
         type: "string",
