@@ -979,6 +979,130 @@ function normalizeTranscript(text, langHint) {
   }
   return t;
 }
+
+// Format shopping items with quantities and units
+function formatShoppingItems(itemsString) {
+  if (!itemsString || typeof itemsString !== 'string') return itemsString;
+  
+  // Number word to digit mapping (Latvian)
+  const numberWords = {
+    'viens': 1, 'viena': 1, 'vienu': 1,
+    'divi': 2, 'divas': 2, 'divus': 2,
+    'trīs': 3,
+    'četri': 4, 'četras': 4, 'četrus': 4,
+    'pieci': 5, 'piecas': 5, 'piecus': 5,
+    'seši': 6, 'sešas': 6, 'sešus': 6,
+    'septiņi': 7, 'septiņas': 7, 'septiņus': 7,
+    'astoņi': 8, 'astoņas': 8, 'astoņus': 8,
+    'deviņi': 9, 'deviņas': 9, 'deviņus': 9,
+    'desmit': 10,
+    'divdesmit': 20, 'trīsdesmit': 30, 'četrdesmit': 40, 'piecdesmit': 50,
+    'sešdesmit': 60, 'septiņdesmit': 70, 'astoņdesmit': 80, 'deviņdesmit': 90,
+    'simts': 100, 'divsimt': 200, 'trīssimt': 300, 'trīsimts': 300,
+    'četrsimt': 400, 'piecsimt': 500, 'sešsimt': 600,
+    'septiņsimt': 700, 'astoņsimt': 800, 'deviņsimt': 900
+  };
+  
+  // Unit mappings
+  const unitMap = {
+    'kilogrami': 'kg', 'kilogramu': 'kg', 'kilogramus': 'kg', 'kilograma': 'kg',
+    'kilogram': 'kg', 'kilogramam': 'kg',
+    'litri': 'l', 'litru': 'l', 'litrus': 'l', 'litra': 'l',
+    'litr': 'l', 'litram': 'l',
+    'grami': 'g', 'gramu': 'g', 'gramus': 'g', 'grama': 'g',
+    'gram': 'g', 'gramam': 'g',
+    'gabali': 'gb', 'gabalu': 'gb', 'gabalus': 'gb', 'gabala': 'gb',
+    'gabals': 'gb', 'gabalam': 'gb', 'gab': 'gb'
+  };
+  
+  // Split items by comma
+  const items = itemsString.split(',').map(item => item.trim());
+  
+  return items.map(item => {
+    if (!item) return item;
+    
+    const lowerItem = item.toLowerCase();
+    let formatted = item;
+    
+    // Extract number (word or digit)
+    let number = null;
+    let numberWord = null;
+    let digitMatch = null;
+    
+    // Check for number words
+    for (const [word, num] of Object.entries(numberWords)) {
+      const wordRegex = new RegExp(`\\b${word}\\b`, 'gi');
+      if (wordRegex.test(lowerItem)) {
+        number = num;
+        numberWord = word;
+        break;
+      }
+    }
+    
+    // If no number word, check for digits
+    if (number === null) {
+      digitMatch = lowerItem.match(/\b(\d+)\b/);
+      if (digitMatch) {
+        number = parseInt(digitMatch[1], 10);
+      }
+    }
+    
+    // Extract unit
+    let unit = null;
+    let unitWord = null;
+    for (const [word, abbr] of Object.entries(unitMap)) {
+      const unitRegex = new RegExp(`\\b${word}\\b`, 'gi');
+      if (unitRegex.test(lowerItem)) {
+        unit = abbr;
+        unitWord = word;
+        break;
+      }
+    }
+    
+    // If we have both number and unit, format it
+    if (number !== null && unit !== null) {
+      // Remove number word/digit and unit word from the string
+      let productName = lowerItem;
+      if (numberWord) {
+        productName = productName.replace(new RegExp(`\\b${numberWord}\\b`, 'gi'), '');
+      } else if (digitMatch) {
+        productName = productName.replace(/\b\d+\b/, '');
+      }
+      if (unitWord) {
+        productName = productName.replace(new RegExp(`\\b${unitWord}\\b`, 'gi'), '');
+      }
+      
+      // Clean up product name (remove extra spaces)
+      productName = productName.replace(/\s+/g, ' ').trim();
+      
+      // Format: "productName number unit" (always product first, then quantity)
+      formatted = productName ? `${productName} ${number} ${unit}` : `${number} ${unit}`;
+      
+      // Capitalize first letter
+      if (formatted.length > 0) {
+        formatted = formatted[0].toUpperCase() + formatted.slice(1);
+      }
+    } else if (number !== null && !unit) {
+      // Only number, no unit - just replace number word with digit
+      if (numberWord) {
+        formatted = lowerItem.replace(new RegExp(`\\b${numberWord}\\b`, 'gi'), number.toString());
+        // Capitalize first letter
+        if (formatted.length > 0) {
+          formatted = formatted[0].toUpperCase() + formatted.slice(1);
+        }
+      }
+    } else if (unit !== null && !number) {
+      // Only unit, no number - just replace unit word with abbreviation
+      formatted = lowerItem.replace(new RegExp(`\\b${unitWord}\\b`, 'gi'), unit);
+      // Capitalize first letter
+      if (formatted.length > 0) {
+        formatted = formatted[0].toUpperCase() + formatted.slice(1);
+      }
+    }
+    
+    return formatted || item;
+  }).join(', ');
+}
 // Heiristiska kvalitātes novērtēšana (bez papildu API izmaksām)
 function qualityScore(text) {
   const t = (text || "").trim();
@@ -1694,6 +1818,11 @@ app.post("/ingest-audio", async (req, res) => {
   
     // Use GPT result directly (no V3/Teacher logic)
     const finalResult = parsed;
+    
+    // Format shopping items with quantities and units
+    if (finalResult.type === "shopping" && finalResult.items) {
+      finalResult.items = formatShoppingItems(finalResult.items);
+    }
     
     // Add metadata
     finalResult.raw_transcript = raw;
