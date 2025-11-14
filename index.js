@@ -336,9 +336,11 @@ app.use((req, res, next) => {
 
 /* ===== PLANS (fiksēta konfigurācija kodā) ===== */
 const plans = {
-  basic: { dailyLimit: 5,      monthlyLimit: null },
-  pro:   { dailyLimit: 999999, monthlyLimit: 300 },   // Pro: nav dienas limita, tikai 300/mēn
-  dev:   { dailyLimit: 999999, monthlyLimit: 999999 }
+  free:     { dailyLimit: 999999, monthlyLimit: 10 },        // Free: 10 ieraksti/mēn, default plāns
+  basic:    { dailyLimit: 999999, monthlyLimit: 150 },       // Standarta: 150 ieraksti/mēn, 1.99 EUR/mēn
+  pro:      { dailyLimit: 999999, monthlyLimit: 300 },       // Pro: 300 ieraksti/mēn, 2.99 EUR/mēn
+  "pro-yearly": { dailyLimit: 999999, monthlyLimit: null },  // Pro Yearly: Unlimited, 29.99 EUR/gadā
+  dev:      { dailyLimit: 999999, monthlyLimit: 999999 }     // Dev: bez limits (testēšanai)
 };
 const GRACE_DAILY = 2; // “kļūdu buferis” – ne-soda mēģinājumi dienā
 
@@ -767,9 +769,11 @@ function guessMime(filename) {
 }
 function getPlanLimits(planHeader) {
   const p = (planHeader || "").toLowerCase();
+  if (p === "pro-yearly") return { plan: "pro-yearly", dailyLimit: plans["pro-yearly"].dailyLimit, monthlyLimit: null };
   if (p === "pro") return { plan: "pro", dailyLimit: plans.pro.dailyLimit, monthlyLimit: plans.pro.monthlyLimit };
+  if (p === "basic") return { plan: "basic", dailyLimit: plans.basic.dailyLimit, monthlyLimit: plans.basic.monthlyLimit };
   if (p === "dev") return { plan: "dev", dailyLimit: plans.dev.dailyLimit, monthlyLimit: plans.dev.monthlyLimit };
-  return { plan: "basic", dailyLimit: plans.basic.dailyLimit, monthlyLimit: plans.basic.monthlyLimit ?? 0 };
+  return { plan: "free", dailyLimit: plans.free.dailyLimit, monthlyLimit: plans.free.monthlyLimit }; // Default: free
 }
 async function getUserUsage(userId, planHeader) {
   const limits = getPlanLimits(planHeader);
@@ -797,41 +801,13 @@ async function getUserUsage(userId, planHeader) {
                 reject(err);
                 return;
               }
-              // Calculate top-ups for PRO plan (even for new records)
-              let topUpRemaining = 0;
-              if (limits.plan === "pro") {
-                db.all(
-                  `SELECT SUM(amount_remaining) as total_remaining 
-                   FROM top_ups 
-                   WHERE user_id = ? AND month_key = ? AND amount_remaining > 0`,
-                  [userId, mKey],
-                  (err, topUpRows) => {
-                    if (!err && topUpRows && topUpRows.length > 0) {
-                      topUpRemaining = topUpRows[0].total_remaining || 0;
-                    }
-                    
-                    resolve({
-                      u: {
-                        plan: limits.plan,
-                        daily: { dayKey: today, used: 0, graceUsed: 0 },
-                        monthly: { monthKey: mKey, used: 0 }
-                      },
-                      limits,
-                      topUpRemaining
-                    });
-                  }
-                );
-                return; // Early return
-              }
-              
               resolve({
                 u: {
                   plan: limits.plan,
                   daily: { dayKey: today, used: 0, graceUsed: 0 },
                   monthly: { monthKey: mKey, used: 0 }
                 },
-                limits,
-                topUpRemaining: 0
+                limits
               });
             }
           );
@@ -844,41 +820,13 @@ async function getUserUsage(userId, planHeader) {
             );
           }
           
-          // Calculate top-ups for PRO plan
-          let topUpRemaining = 0;
-          if (limits.plan === "pro") {
-            db.all(
-              `SELECT SUM(amount_remaining) as total_remaining 
-               FROM top_ups 
-               WHERE user_id = ? AND month_key = ? AND amount_remaining > 0`,
-              [userId, mKey],
-              (err, topUpRows) => {
-                if (!err && topUpRows && topUpRows.length > 0) {
-                  topUpRemaining = topUpRows[0].total_remaining || 0;
-                }
-                
-                resolve({
-                  u: {
-                    plan: limits.plan,
-                    daily: { dayKey: today, used: row.daily_used, graceUsed: row.daily_grace_used },
-                    monthly: { monthKey: mKey, used: row.monthly_used }
-                  },
-                  limits,
-                  topUpRemaining
-                });
-              }
-            );
-            return; // Early return, resolve happens in callback
-          }
-          
           resolve({
             u: {
               plan: limits.plan,
               daily: { dayKey: row.day_key, used: row.daily_used, graceUsed: row.daily_grace_used },
               monthly: { monthKey: row.month_key, used: row.monthly_used }
             },
-            limits,
-            topUpRemaining: 0
+            limits
           });
         }
       }
@@ -1233,99 +1181,14 @@ app.get("/metrics", async (req, res) => {
 });
 
 
-/* ===== /purchase-topup ===== */
-app.post("/purchase-topup", async (req, res) => {
-  try {
-    const userId = req.header("X-User-Id") || "anon";
-    const planHdr = req.header("X-Plan") || "basic";
-    
-    // Only PRO users can purchase top-ups
-    if (planHdr.toLowerCase() !== "pro") {
-      return res.status(403).json({ 
-        error: "topup_not_available", 
-        message: "Top-ups are only available for PRO plan users",
-        requestId: req.requestId 
-      });
-    }
-    
-    const { transactionId } = req.body;
-    if (!transactionId) {
-      return res.status(400).json({ 
-        error: "transaction_id_required", 
-        requestId: req.requestId 
-      });
-    }
-    
-    const mKey = monthKeyRiga();
-    const topUpAmount = 150; // 150 requests per top-up
-    const purchaseDate = new Date().toISOString();
-    
-    // Check if transaction already exists
-    db.get(
-      `SELECT id FROM top_ups WHERE user_id = ? AND transaction_id = ?`,
-      [userId, transactionId],
-      (err, existing) => {
-        if (err) {
-          console.error("Top-up purchase error:", err);
-          return res.status(500).json({ 
-            error: "purchase_failed", 
-            requestId: req.requestId 
-          });
-        }
-        
-        if (existing) {
-          // Transaction already processed
-          return res.status(200).json({ 
-            success: true, 
-            message: "Transaction already processed",
-            topUpAmount,
-            requestId: req.requestId 
-          });
-        }
-        
-        // Insert new top-up
-        db.run(
-          `INSERT INTO top_ups (user_id, month_key, amount_purchased, amount_remaining, purchase_date, transaction_id)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [userId, mKey, topUpAmount, topUpAmount, purchaseDate, transactionId],
-          function(insertErr) {
-            if (insertErr) {
-              console.error("Top-up purchase insert error:", insertErr);
-              return res.status(500).json({ 
-                error: "purchase_failed", 
-                requestId: req.requestId 
-              });
-            }
-            
-            console.log(`✅ [${req.requestId}] Top-up purchased: user=${userId}, amount=${topUpAmount}, transaction=${transactionId}`);
-            
-            return res.status(200).json({
-              success: true,
-              topUpAmount,
-              topUpRemaining: topUpAmount,
-              requestId: req.requestId
-            });
-          }
-        );
-      }
-    );
-  } catch (error) {
-    console.error("Top-up purchase error:", error);
-    return res.status(500).json({ 
-      error: "purchase_failed", 
-      requestId: req.requestId 
-    });
-  }
-});
-
 /* ===== /quota ===== */
 const normalizeDaily = (n) => (n >= 999999 ? null : n);
 
 app.get("/quota", async (req, res) => {
   try {
     const userId = req.header("X-User-Id") || "anon";
-    const planHdr = req.header("X-Plan") || "basic";
-    const { u, limits, topUpRemaining = 0 } = await getUserUsage(userId, planHdr);
+    const planHdr = req.header("X-Plan") || "free";
+    const { u, limits } = await getUserUsage(userId, planHdr);
 
     const dailyLimitNorm = normalizeDaily(limits.dailyLimit);
     const out = {
@@ -1338,16 +1201,14 @@ app.get("/quota", async (req, res) => {
       dailyReset: toRigaISO(new Date(new Date().setHours(0,0,0,0) + 24*3600*1000)),
       requestId: req.requestId
     };
-    if (limits.plan === "pro") {
+    
+    // Add monthly limits for plans that have them (basic, pro, but not pro-yearly which is unlimited)
+    if (limits.monthlyLimit !== null && limits.monthlyLimit !== undefined) {
       out.monthlyLimit = limits.monthlyLimit;
       out.monthlyUsed = u.monthly.used;
-      const totalMonthlyAvailable = limits.monthlyLimit + topUpRemaining;
-      out.monthlyRemaining = Math.max(0, totalMonthlyAvailable - u.monthly.used);
-      out.topUpRemaining = topUpRemaining;
-      out.canPurchaseTopUp = true; // PRO users can always purchase
-      out.topUpPrice = 1.0; // 1 EUR for 150 requests
-      out.topUpAmount = 150; // 150 requests per top-up
+      out.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
     }
+    
     return res.json(out);
   } catch (error) {
     console.error("Quota error:", error);
@@ -1622,7 +1483,7 @@ app.post("/ingest-audio", async (req, res) => {
     const userId = req.header("X-User-Id") || "anon";
     const planHdr = req.header("X-Plan") || "basic";
     const langHint = (req.header("X-Lang") || "lv").toLowerCase();
-    const { u, limits, topUpRemaining = 0 } = await getUserUsage(userId, planHdr);
+    const { u, limits } = await getUserUsage(userId, planHdr);
     console.timeEnd(`[${req.requestId}] getUserUsage`);
     timings.getUserUsage = Date.now() - getUserUsageStart;
     lastTime = Date.now();
@@ -1631,9 +1492,9 @@ app.post("/ingest-audio", async (req, res) => {
     if (u.daily.used >= limits.dailyLimit) {
       return res.status(429).json({ error: "quota_exceeded", plan: limits.plan });
     }
-    if (limits.plan === "pro") {
-      const totalMonthlyAvailable = limits.monthlyLimit + topUpRemaining;
-      if (u.monthly.used >= totalMonthlyAvailable) {
+    // Check monthly limits for plans that have them (basic, pro, but not pro-yearly which is unlimited)
+    if (limits.monthlyLimit !== null && limits.monthlyLimit !== undefined) {
+      if (u.monthly.used >= limits.monthlyLimit) {
         return res.status(429).json({ error: "monthly_quota_exceeded", plan: limits.plan });
       }
     }
