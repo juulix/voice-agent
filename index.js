@@ -446,6 +446,14 @@ PRASĪBAS:
 4. Ja VIENA darbība: JSON: {type, description, notes, start, end, hasTime, items, lang, corrected_input}
 5. Ja VAIRĀKAS REMINDER: JSON: {type:"multiple", tasks:[{type:"reminder", description, notes, start, end, hasTime, items, lang}, ...]}
 
+TIPU ATŠĶIRŠANA (REMINDER vs CALENDAR):
+- REMINDER: Ja teksts sākas ar "atgādini", "atgādināt", "atgādinājums" vai līdzīgiem vārdiem
+- CALENDAR: Ja teksts satur "tikšanās", "sapulce", "notikums", "pasākums" UN nav vārda "atgādini" priekšā
+- CALENDAR: Ja teksts satur laiku un datumu, bet nav skaidrs "atgādini" konteksts → calendar
+- REMINDER: Ja teksts ir īss uzdevums bez konkrēta notikuma (piem., "zvanīt", "pierakstīt", "atcerēties")
+- CALENDAR: Ja teksts satur vietu (piem., "Rīgā", "kafejnīcā", "ofisā") un laiku → calendar
+- REMINDER: Ja teksts ir "pieraksti", "piezīme", "ideja", "note" → reminder (inbox reminder)
+
 NOTES FIELD LOĢIKA:
 - "notes" lauks ir pieejams reminder UN calendar tipiem - shopping tipam vienmēr notes = null
 - Reminder tipam: "notes" ir papildu konteksts/garāks teksts, kas neietilpst īsajā "description"
@@ -466,6 +474,13 @@ DATUMU SAPRATNE:
 - Ordinal skaitļi (sestajā, divdesmitajā)=datumi, NE laiki
 
 CALENDAR: Vienmēr pievieno end (+1h no start). Ja nav laika→hasTime=false, bet default 14:00.
+
+SVARĪGI - TIPU ATŠĶIRŠANA:
+- "Tikšanās ar Jāni rīt plkst 10" → CALENDAR (nav "atgādini")
+- "Atgādini man tikšanās ar Jāni rīt plkst 10" → REMINDER (ir "atgādini")
+- "Rīt tikšanās ar Jāni Rīgā" → CALENDAR (nav "atgādini", ir vieta)
+- "Tikšanās ar Jāni rīt desmitos" → CALENDAR (nav "atgādini")
+- "Atgādini man rīt plkst 9 zvanīt" → REMINDER (ir "atgādini")
 
 PIEMĒRI:
 
