@@ -269,3 +269,6 @@ Pēc katras optimizācijas:
 
 
 
+
+
+
