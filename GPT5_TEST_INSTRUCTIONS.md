@@ -128,3 +128,6 @@ Pēc katra testa salīdzini:
 
 
 
+
+
+
