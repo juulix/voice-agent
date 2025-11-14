@@ -336,7 +336,7 @@ app.use((req, res, next) => {
 
 /* ===== PLANS (fiksēta konfigurācija kodā) ===== */
 const plans = {
-  free:     { dailyLimit: 999999, monthlyLimit: 10 },        // Free: 10 ieraksti/mēn, default plāns
+  free:     { dailyLimit: 999999, monthlyLimit: 10 },        // Free: 10 ieraksti/mēn (nav dienas limita), default plāns
   basic:    { dailyLimit: 999999, monthlyLimit: 150 },       // Standarta: 150 ieraksti/mēn, 1.99 EUR/mēn
   pro:      { dailyLimit: 999999, monthlyLimit: 300 },       // Pro: 300 ieraksti/mēn, 2.99 EUR/mēn
   "pro-yearly": { dailyLimit: 999999, monthlyLimit: null },  // Pro Yearly: Unlimited, 29.99 EUR/gadā
