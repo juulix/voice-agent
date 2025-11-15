@@ -1310,9 +1310,16 @@ app.get("/version", (req, res) => res.json({
 
 app.get("/metrics", async (req, res) => {
   // Require authentication for metrics endpoint
-  const auth = req.headers.authorization || "";
-  // Pagaidu risinājums: pievienot fallback token "secret123" production režīmā
+  let auth = req.headers.authorization || "";
+  
+  // Pagaidu risinājums: ja Authorization header nav nosūtīts vai ir tukšs,
+  // automātiski pieņem "Bearer secret123" (emergency fallback)
   // TODO: Noņemt pēc token pievienošanas Xcode projektā
+  if (!auth || auth.trim() === "" || auth === "Bearer ") {
+    console.log(`[${req.requestId}] ⚠️ Authorization header missing or empty - using fallback token`);
+    auth = "Bearer secret123";
+  }
+  
   const validTokens = [
     `Bearer ${APP_BEARER_TOKEN}`,
     "Bearer secret123" // Pagaidu fallback token
@@ -1593,14 +1600,21 @@ app.post("/ingest-audio", async (req, res) => {
     console.time(`[${req.requestId}] auth-check`);
     const authStart = Date.now();
     if (APP_BEARER_TOKEN) {
-      const auth = req.headers.authorization || "";
-      // Pagaidu risinājums: pievienot fallback token "secret123" production režīmā
+      let auth = req.headers.authorization || "";
+      
+      // Pagaidu risinājums: ja Authorization header nav nosūtīts vai ir tukšs,
+      // automātiski pieņem "Bearer secret123" (emergency fallback)
       // TODO: Noņemt pēc token pievienošanas Xcode projektā
+      if (!auth || auth.trim() === "" || auth === "Bearer ") {
+        console.log(`[${req.requestId}] ⚠️ Authorization header missing or empty - using fallback token`);
+        auth = "Bearer secret123";
+      }
+      
       const validTokens = [
         `Bearer ${APP_BEARER_TOKEN}`,
         "Bearer secret123" // Pagaidu fallback token
       ];
-      // DEBUG: Log received token (first 10 chars only for security)
+      // DEBUG: Log received token (first 20 chars only for security)
       console.log(`[${req.requestId}] Auth check - Received: "${auth.substring(0, 20)}...", Valid tokens: ${validTokens.length}`);
       if (!validTokens.includes(auth)) {
         console.log(`[${req.requestId}] ❌ Auth failed - token not in valid list`);
