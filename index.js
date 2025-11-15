@@ -444,9 +444,12 @@ Datums: ${today}, Rīt: ${tomorrowDate}, Laiks: ${currentTime}, Diena: ${current
 PRASĪBAS:
 1. Atbildē TIKAI JSON - bez markdown, bez teksta
 2. Viena darbība: reminder VAI calendar VAI shopping
-3. VAIRĀKAS darbības: TIKAI reminder tipam (vairāki reminder vienā reizē)
+3. VAIRĀKAS darbības: TIKAI reminder tipam, BET TIKAI ja ir vairāki skaidri norādīti pulksteņa laiki
+   - Piemēram: "uztaisi trīs atgādinājumus: rīt plkst 9, pirmdien plkst 14, trešdien plkst 18" → 3 reminderi
+   - Piemēram: "atgādini rīt 9, 10 un 11" → 3 reminderi
+   - NEIZVEIDOT vairākus reminderus, ja teksts ir viens garš teikums ar vienu laiku (piem., "atgādini man rīt deviņos desmit, serverī vakarā ir arī svarīgāks" → 1 reminders)
 4. Ja VIENA darbība: JSON: {type, description, notes, start, end, hasTime, items, lang, corrected_input}
-5. Ja VAIRĀKAS REMINDER: JSON: {type:"multiple", tasks:[{type:"reminder", description, notes, start, end, hasTime, items, lang}, ...]}
+5. Ja VAIRĀKAS REMINDER (tikai ar vairākiem skaidriem laikiem): JSON: {type:"multiple", tasks:[{type:"reminder", description, notes, start, end, hasTime, items, lang}, ...]}
 
 TIPU ATŠĶIRŠANA (REMINDER vs CALENDAR):
 - REMINDER: Ja teksts sākas ar "atgādini", "atgādināt", "atgādinājums" vai līdzīgiem vārdiem
@@ -469,6 +472,11 @@ LAIKA LOĢIKA:
 - "rīt"=${tomorrowDate}, "šodien"=${today}, "pirmdien/otrdien/utt"=nākamā diena
 - "no rīta"=09:00, "pēcpusdienā/dienā"=14:00, "vakarā"=18:00 (ja nav precīzs laiks)
 - plkst 1-7 bez "no rīta"→PM (14:00-19:00), plkst 8-11→AM, plkst 12+→keep
+- SVARĪGI: Ja ir norādīts skaitlisks laiks (1-12) + "vakarā", tad "vakarā" tikai norāda PM, bet NEDRĪKST mainīt laiku:
+  * "5 vakarā" = 17:00 (5 PM), NEVIS 18:00 (6 PM)
+  * "9 vakarā" = 21:00 (9 PM), NEVIS 22:00 (10 PM)
+  * "vakarā" tikai palīdz saprast par kuru dienas daļu ir runa, bet laiks jau ir norādīts
+- Ja ir skaitlisks laiks (13-23), ignorēt "vakarā" - laiks jau ir 24h formātā
 
 DATUMU SAPRATNE:
 - "divdesmit sestajā novembrī"=26. novembris (NE 10:20!)
@@ -507,13 +515,25 @@ Input: "20. novembrī pulksten 14 budžeta izskatīšana"
 Input: "pievieno sapulci rīt plkst 2 ar piezīmi ka būs ar komandu"
 {"type":"calendar","description":"Sapulce","notes":"Ar komandu","start":"${tomorrowDate}T14:00:00+02:00","end":"${tomorrowDate}T15:00:00+02:00","hasTime":true,"items":null,"lang":"lv","corrected_input":null}
 
+Input: "rīt piecos vakarā tikšanās ar mīļoto teātri"
+{"type":"calendar","description":"Tikšanās ar mīļoto teātri","notes":null,"start":"${tomorrowDate}T17:00:00+02:00","end":"${tomorrowDate}T18:00:00+02:00","hasTime":true,"items":null,"lang":"lv","corrected_input":null}
+
+Input: "9 no rīt atgādini"
+{"type":"reminder","description":"Atgādinājums","notes":null,"start":"${tomorrowDate}T09:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv","corrected_input":null}
+
 Input: "pievieno piens, maize, olas"
 {"type":"shopping","description":"Pirkumi","notes":null,"start":null,"end":null,"hasTime":false,"items":"piens, maize, olas","lang":"lv","corrected_input":null}
 
-VAIRĀKU REMINDER PIEMĒRI (TIKAI REMINDER):
+VAIRĀKU REMINDER PIEMĒRI (TIKAI REMINDER - TIKAI ar vairākiem skaidriem laikiem):
 
 Input: "uztaisi trīs atgādinājumus: rīt plkst 9, pirmdien plkst 14, trešdien plkst 18"
 {"type":"multiple","tasks":[{"type":"reminder","description":"Atgādinājums","notes":null,"start":"${tomorrowDate}T09:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"},{"type":"reminder","description":"Atgādinājums","notes":null,"start":"2025-01-XXT14:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"},{"type":"reminder","description":"Atgādinājums","notes":null,"start":"2025-01-XXT18:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"}]}
+
+Input: "atgādini rīt 9, 10 un 11"
+{"type":"multiple","tasks":[{"type":"reminder","description":"Atgādinājums","notes":null,"start":"${tomorrowDate}T09:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"},{"type":"reminder","description":"Atgādinājums","notes":null,"start":"${tomorrowDate}T10:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"},{"type":"reminder","description":"Atgādinājums","notes":null,"start":"${tomorrowDate}T11:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv"}]}
+
+Input: "Atgādini man rīt deviņos desmit, serverī vakarā ir arī svarīgāks, ja pasaka, ka maini arī deviņos no rīta, viņš tāpat ieliek sešos vakarā"
+{"type":"reminder","description":"Atgādini man rīt deviņos desmit","notes":"Serverī vakarā ir arī svarīgāks, ja pasaka, ka maini arī deviņos no rīta, viņš tāpat ieliek sešos vakarā","start":"${tomorrowDate}T09:10:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv","corrected_input":null}
 
 SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgriez TIKAI PIRMO darbību (calendar vai shopping). Multi-item atbalsts ir TIKAI reminder tipam.`;
   const promptBuildTime = Date.now() - promptStart;
