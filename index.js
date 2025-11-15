@@ -1311,9 +1311,14 @@ app.get("/version", (req, res) => res.json({
 app.get("/metrics", async (req, res) => {
   // Require authentication for metrics endpoint
   const auth = req.headers.authorization || "";
-  const expectedToken = `Bearer ${APP_BEARER_TOKEN}`;
-  
-  if (APP_BEARER_TOKEN && auth !== expectedToken) {
+  // Pagaidu risinājums: pievienot fallback token "secret123" production režīmā
+  // TODO: Noņemt pēc token pievienošanas Xcode projektā
+  const validTokens = [
+    `Bearer ${APP_BEARER_TOKEN}`,
+    "Bearer secret123" // Pagaidu fallback token
+  ];
+
+  if (APP_BEARER_TOKEN && !validTokens.includes(auth)) {
     return res.status(401).json({ 
       error: "unauthorized",
       requestId: req.requestId
@@ -1589,7 +1594,13 @@ app.post("/ingest-audio", async (req, res) => {
     const authStart = Date.now();
     if (APP_BEARER_TOKEN) {
       const auth = req.headers.authorization || "";
-      if (auth !== `Bearer ${APP_BEARER_TOKEN}`) {
+      // Pagaidu risinājums: pievienot fallback token "secret123" production režīmā
+      // TODO: Noņemt pēc token pievienošanas Xcode projektā
+      const validTokens = [
+        `Bearer ${APP_BEARER_TOKEN}`,
+        "Bearer secret123" // Pagaidu fallback token
+      ];
+      if (!validTokens.includes(auth)) {
         console.timeEnd(`[${req.requestId}] auth-check`);
         return res.status(401).json({ 
           error: "unauthorized",
