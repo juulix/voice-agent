@@ -1600,13 +1600,19 @@ app.post("/ingest-audio", async (req, res) => {
         `Bearer ${APP_BEARER_TOKEN}`,
         "Bearer secret123" // Pagaidu fallback token
       ];
+      // DEBUG: Log received token (first 10 chars only for security)
+      console.log(`[${req.requestId}] Auth check - Received: "${auth.substring(0, 20)}...", Valid tokens: ${validTokens.length}`);
       if (!validTokens.includes(auth)) {
+        console.log(`[${req.requestId}] ❌ Auth failed - token not in valid list`);
         console.timeEnd(`[${req.requestId}] auth-check`);
         return res.status(401).json({ 
           error: "unauthorized",
           requestId: req.requestId
         });
       }
+      console.log(`[${req.requestId}] ✅ Auth passed`);
+    } else {
+      console.log(`[${req.requestId}] ⚠️ APP_BEARER_TOKEN not set - skipping auth`);
     }
     console.timeEnd(`[${req.requestId}] auth-check`);
     timings.auth = Date.now() - authStart;
