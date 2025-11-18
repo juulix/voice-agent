@@ -195,6 +195,35 @@ db.serialize(() => {
   db.run(`CREATE INDEX IF NOT EXISTS idx_top_ups_user_month 
     ON top_ups(user_id, month_key)`);
   
+  // Notes tables
+  db.run(`CREATE TABLE IF NOT EXISTS notes (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    transcript TEXT NOT NULL,
+    audio_url TEXT,
+    folder_id TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE SET NULL
+  )`);
+  
+  db.run(`CREATE TABLE IF NOT EXISTS folders (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, name)
+  )`);
+  
+  // Indexes for notes
+  db.run(`CREATE INDEX IF NOT EXISTS idx_notes_user_id ON notes(user_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_notes_folder_id ON notes(folder_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at DESC)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_folders_user_id ON folders(user_id)`);
+  
   console.log('✅ Database optimized and indexes created');
 });
 
@@ -1945,6 +1974,415 @@ app.post("/ingest-audio", async (req, res) => {
     console.error("processing_failed:", e?.response?.status || "", e?.response?.data || "", e);
     return res.status(500).json({ error: "processing_failed", details: String(e), requestId: req.requestId });
   }
+});
+
+// ===== NOTES ENDPOINTS =====
+
+// POST /api/notes/create
+app.post("/api/notes/create", async (req, res) => {
+  const processingStart = Date.now();
+  const requestId = req.requestId || `notes-${Date.now()}`;
+  
+  try {
+    // Auth (same as ingest-audio)
+    if (APP_BEARER_TOKEN) {
+      let auth = req.headers.authorization || "";
+      if (!auth || auth.trim() === "" || auth === "Bearer ") {
+        auth = "Bearer secret123";
+      }
+      const validTokens = [`Bearer ${APP_BEARER_TOKEN}`, "Bearer secret123"];
+      if (!validTokens.includes(auth)) {
+        return res.status(401).json({ error: "unauthorized", requestId });
+      }
+    }
+
+    const userId = req.header("X-User-Id") || "anon";
+
+    // Parse multipart form data
+    const fields = {};
+    let fileBuf = Buffer.alloc(0);
+    let filename = "audio.m4a";
+    const bb = Busboy({ headers: req.headers, limits: { files: 1, fileSize: 10 * 1024 * 1024 } });
+    let fileTooLarge = false;
+
+    await new Promise((resolve, reject) => {
+      bb.on("field", (name, val) => { fields[name] = val; });
+      bb.on("file", (_name, stream, info) => {
+        filename = info?.filename || filename;
+        stream.on("data", (d) => { fileBuf = Buffer.concat([fileBuf, d]); });
+        stream.on("limit", () => { fileTooLarge = true; stream.resume(); });
+        stream.on("end", () => {});
+      });
+      bb.on("error", reject);
+      bb.on("finish", resolve);
+      req.pipe(bb);
+    });
+
+    if (fileTooLarge) {
+      return res.status(413).json({ error: "file_too_large", requestId });
+    }
+    if (!fileBuf.length) {
+      return res.status(400).json({ error: "file_missing", requestId });
+    }
+
+    const langHint = (req.header("X-Lang") || fields.lang || "lv").toLowerCase();
+
+    // Transcribe audio
+    const file = await toFile(fileBuf, filename, { type: guessMime(filename) });
+    const tr = await openai.audio.transcriptions.create({
+      model: "gpt-4o-mini-transcribe",
+      file,
+      language: langHint === "lv" ? "lv" : undefined
+    });
+    const transcript = (tr.text || "").trim();
+
+    if (!transcript || transcript.length < 2) {
+      return res.status(422).json({ error: "empty_transcript", requestId });
+    }
+
+    // Generate title and summary with GPT
+    const systemPrompt = langHint === "lv" 
+      ? `Tu esi palīgs, kas ģenerē piezīmju nosaukumus un strukturētus kopsavilkumus. Ģenerē īsu, nozīmīgu nosaukumu (maksimums 6-8 vārdi) un strukturētu kopsavilkumu ar bullet points, grupējot saturu pa tēmām, ja tādas ir. Kopsavilkums jābūt viegli lasāmam un skatāmam.`
+      : `You are a helper that generates note titles and structured summaries. Generate a short, meaningful title (maximum 6-8 words) and a structured summary with bullet points, grouping content by topics if applicable. The summary should be easy to read and skim.`;
+
+    const userPrompt = langHint === "lv"
+      ? `Transkripts:\n${transcript}\n\nĢenerē nosaukumu un strukturētu kopsavilkumu šim transkriptam.`
+      : `Transcript:\n${transcript}\n\nGenerate a title and structured summary for this transcript.`;
+
+    const gptResponse = await safeCreate(buildParams({
+      model: DEFAULT_TEXT_MODEL,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }],
+      max: 500,
+      temperature: 0.7
+    }));
+
+    const content = gptResponse.choices[0].message.content;
+    const lines = content.split('\n').filter(l => l.trim());
+    let title = lines[0] || 'Untitled Note';
+    let summary = lines.slice(1).join('\n').trim() || content;
+    title = title.replace(/^#+\s*/, '').trim();
+    if (title.length > 60) title = title.substring(0, 57) + '...';
+
+    // Generate note ID
+    const noteId = `note-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const now = new Date().toISOString();
+    const audioUrl = `/audio/notes/${noteId}.m4a`; // In production, upload to S3
+
+    // Save to database
+    db.run(
+      `INSERT INTO notes (id, user_id, title, summary, transcript, audio_url, folder_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [noteId, userId, title, summary, transcript, audioUrl, null, now, now],
+      function(err) {
+        if (err) {
+          console.error(`[${requestId}] Database error:`, err);
+          Sentry.captureException(err);
+          return res.status(500).json({ error: "database_error", requestId });
+        }
+
+        // Return note
+        db.get('SELECT * FROM notes WHERE id = ?', [noteId], (err, note) => {
+          if (err || !note) {
+            return res.status(500).json({ error: "failed_to_retrieve_note", requestId });
+          }
+          res.json({
+            note: {
+              id: note.id,
+              title: note.title,
+              summary: note.summary,
+              transcript: note.transcript,
+              audio_url: note.audio_url,
+              folder_id: note.folder_id,
+              created_at: note.created_at,
+              updated_at: note.updated_at
+            },
+            requestId
+          });
+        });
+      }
+    );
+  } catch (error) {
+    console.error(`[${requestId}] Error:`, error);
+    Sentry.captureException(error);
+    res.status(500).json({ error: error.message || "internal_error", requestId });
+  }
+});
+
+// GET /api/notes
+app.get("/api/notes", (req, res) => {
+  const userId = req.header("X-User-Id") || "anon";
+  const folderId = req.query.folder_id;
+
+  let query = 'SELECT * FROM notes WHERE user_id = ?';
+  const params = [userId];
+
+  if (folderId) {
+    query += ' AND folder_id = ?';
+    params.push(folderId);
+  }
+
+  query += ' ORDER BY created_at DESC';
+
+  db.all(query, params, (err, notes) => {
+    if (err) {
+      console.error('Error fetching notes:', err);
+      Sentry.captureException(err);
+      return res.status(500).json({ error: "database_error" });
+    }
+    res.json({
+      notes: notes.map(note => ({
+        id: note.id,
+        title: note.title,
+        summary: note.summary,
+        transcript: note.transcript,
+        audio_url: note.audio_url,
+        folder_id: note.folder_id,
+        created_at: note.created_at,
+        updated_at: note.updated_at
+      }))
+    });
+  });
+});
+
+// GET /api/notes/:id
+app.get("/api/notes/:id", (req, res) => {
+  const userId = req.header("X-User-Id") || "anon";
+  const noteId = req.params.id;
+
+  db.get(
+    'SELECT * FROM notes WHERE id = ? AND user_id = ?',
+    [noteId, userId],
+    (err, note) => {
+      if (err) {
+        Sentry.captureException(err);
+        return res.status(500).json({ error: "database_error" });
+      }
+      if (!note) {
+        return res.status(404).json({ error: "note_not_found" });
+      }
+      res.json({
+        note: {
+          id: note.id,
+          title: note.title,
+          summary: note.summary,
+          transcript: note.transcript,
+          audio_url: note.audio_url,
+          folder_id: note.folder_id,
+          created_at: note.created_at,
+          updated_at: note.updated_at
+        }
+      });
+    }
+  );
+});
+
+// PATCH /api/notes/:id
+app.patch("/api/notes/:id", (req, res) => {
+  const userId = req.header("X-User-Id") || "anon";
+  const noteId = req.params.id;
+  const { title, summary, folder_id } = req.body;
+
+  // Check if note exists
+  db.get(
+    'SELECT * FROM notes WHERE id = ? AND user_id = ?',
+    [noteId, userId],
+    (err, existingNote) => {
+      if (err) {
+        Sentry.captureException(err);
+        return res.status(500).json({ error: "database_error" });
+      }
+      if (!existingNote) {
+        return res.status(404).json({ error: "note_not_found" });
+      }
+
+      // Validate folder if provided
+      if (folder_id !== undefined && folder_id !== null) {
+        db.get(
+          'SELECT * FROM folders WHERE id = ? AND user_id = ?',
+          [folder_id, userId],
+          (err, folder) => {
+            if (err) {
+              Sentry.captureException(err);
+              return res.status(500).json({ error: "database_error" });
+            }
+            if (!folder) {
+              return res.status(400).json({ error: "folder_not_found" });
+            }
+            performUpdate();
+          }
+        );
+      } else {
+        performUpdate();
+      }
+
+      function performUpdate() {
+        // Build update query
+        const updates = [];
+        const params = [];
+
+        if (title !== undefined) {
+          updates.push('title = ?');
+          params.push(title);
+        }
+        if (summary !== undefined) {
+          updates.push('summary = ?');
+          params.push(summary);
+        }
+        if (folder_id !== undefined) {
+          updates.push('folder_id = ?');
+          params.push(folder_id);
+        }
+
+        if (updates.length === 0) {
+          return res.status(400).json({ error: "no_fields_to_update" });
+        }
+
+        updates.push('updated_at = ?');
+        params.push(new Date().toISOString());
+        params.push(noteId);
+        params.push(userId);
+
+        db.run(
+          `UPDATE notes SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
+          params,
+          function(err) {
+            if (err) {
+              Sentry.captureException(err);
+              return res.status(500).json({ error: "database_error" });
+            }
+            // Fetch updated note
+            db.get(
+              'SELECT * FROM notes WHERE id = ? AND user_id = ?',
+              [noteId, userId],
+              (err, note) => {
+                if (err) {
+                  Sentry.captureException(err);
+                  return res.status(500).json({ error: "database_error" });
+                }
+                if (!note) {
+                  return res.status(500).json({ error: "failed_to_retrieve_note" });
+                }
+                res.json({
+                  note: {
+                    id: note.id,
+                    title: note.title,
+                    summary: note.summary,
+                    transcript: note.transcript,
+                    audio_url: note.audio_url,
+                    folder_id: note.folder_id,
+                    created_at: note.created_at,
+                    updated_at: note.updated_at
+                  }
+                });
+              }
+            );
+          }
+        );
+      }
+    }
+  );
+});
+
+// DELETE /api/notes/:id
+app.delete("/api/notes/:id", (req, res) => {
+  const userId = req.header("X-User-Id") || "anon";
+  const noteId = req.params.id;
+
+  db.get(
+    'SELECT * FROM notes WHERE id = ? AND user_id = ?',
+    [noteId, userId],
+    (err, note) => {
+      if (err) {
+        Sentry.captureException(err);
+        return res.status(500).json({ error: "database_error" });
+      }
+      if (!note) {
+        return res.status(404).json({ error: "note_not_found" });
+      }
+
+      // Delete audio file if exists (in production, delete from S3)
+      // TODO: Implement S3 deletion
+
+      // Delete from database
+      db.run('DELETE FROM notes WHERE id = ? AND user_id = ?', [noteId, userId], (err) => {
+        if (err) {
+          Sentry.captureException(err);
+          return res.status(500).json({ error: "database_error" });
+        }
+        res.status(200).json({ message: "note_deleted" });
+      });
+    }
+  );
+});
+
+// GET /api/folders
+app.get("/api/folders", (req, res) => {
+  const userId = req.header("X-User-Id") || "anon";
+
+  db.all(
+    'SELECT * FROM folders WHERE user_id = ? ORDER BY created_at DESC',
+    [userId],
+    (err, folders) => {
+      if (err) {
+        Sentry.captureException(err);
+        return res.status(500).json({ error: "database_error" });
+      }
+      res.json({
+        folders: folders.map(folder => ({
+          id: folder.id,
+          name: folder.name,
+          created_at: folder.created_at,
+          updated_at: folder.updated_at
+        }))
+      });
+    }
+  );
+});
+
+// POST /api/folders
+app.post("/api/folders", (req, res) => {
+  const userId = req.header("X-User-Id") || "anon";
+  const { name } = req.body;
+
+  if (!name || name.trim().length === 0) {
+    return res.status(400).json({ error: "folder_name_required" });
+  }
+
+  const folderId = `folder-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const now = new Date().toISOString();
+
+  db.run(
+    'INSERT INTO folders (id, user_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    [folderId, userId, name.trim(), now, now],
+    function(err) {
+      if (err) {
+        if (err.message && err.message.includes('UNIQUE constraint')) {
+          return res.status(400).json({ error: "folder_name_exists" });
+        }
+        Sentry.captureException(err);
+        return res.status(500).json({ error: "database_error" });
+      }
+
+      db.get('SELECT * FROM folders WHERE id = ?', [folderId], (err, folder) => {
+        if (err) {
+          Sentry.captureException(err);
+          return res.status(500).json({ error: "database_error" });
+        }
+        if (!folder) {
+          return res.status(500).json({ error: "failed_to_retrieve_folder" });
+        }
+        res.status(201).json({
+          folder: {
+            id: folder.id,
+            name: folder.name,
+            created_at: folder.created_at,
+            updated_at: folder.updated_at
+          }
+        });
+      });
+    }
+  );
 });
 
 // Sentry error handler
