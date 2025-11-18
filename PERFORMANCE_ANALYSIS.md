@@ -273,3 +273,5 @@ Pēc katras optimizācijas:
 
 
 
+
+
