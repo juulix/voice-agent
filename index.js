@@ -869,14 +869,17 @@ async function getUserUsage(userId, planHeader) {
             );
           }
           
-          resolve({
-            u: {
-              plan: limits.plan,
-              daily: { dayKey: row.day_key, used: row.daily_used, graceUsed: row.daily_grace_used },
-              monthly: { monthKey: row.month_key, used: row.monthly_used }
-            },
-            limits
-          });
+          // Calculate actual monthly usage from SUM of daily_used for all plans with monthly limits
+          calculateMonthlyUsage(userId, mKey).then(totalMonthly => {
+            resolve({
+              u: {
+                plan: limits.plan,
+                daily: { dayKey: row.day_key, used: row.daily_used, graceUsed: row.daily_grace_used },
+                monthly: { monthKey: row.month_key, used: totalMonthly }
+              },
+              limits
+            });
+          }).catch(reject);
         }
       }
     );
@@ -978,17 +981,21 @@ async function updateQuotaUsage(userId, plan, dailyUsed, dailyGraceUsed, monthly
           return;
         }
         
-        // Update monthly_used field for easier tracking
-        if (plan === "pro") {
+        // Update monthly_used field for easier tracking (for plans with monthly limits)
+        if (plan === "pro" || plan === "pro-yearly" || plan === "basic" || plan === "free") {
           calculateMonthlyUsage(userId, mKey).then(totalMonthly => {
             db.run(
               `UPDATE quota_usage SET monthly_used = ? WHERE user_id = ? AND month_key = ?`,
               [totalMonthly, userId, mKey],
               () => {
-                // Use top-ups if needed
-                useTopUpIfNeeded(userId, mKey, monthlyLimit)
-                  .then(() => resolve())
-                  .catch(reject);
+                // Use top-ups if needed (only for pro plan)
+                if (plan === "pro") {
+                  useTopUpIfNeeded(userId, mKey, monthlyLimit)
+                    .then(() => resolve())
+                    .catch(reject);
+                } else {
+                  resolve();
+                }
               }
             );
           }).catch(reject);
@@ -2333,8 +2340,8 @@ app.patch("/api/notes/:id", (req, res) => {
         return res.status(404).json({ error: "note_not_found" });
       }
 
-      // Validate folder if provided
-      if (folder_id !== undefined && folder_id !== null) {
+      // Validate folder if provided (folder_id can be null to remove from folder)
+      if (folder_id !== undefined && folder_id !== null && folder_id !== "") {
         db.get(
           'SELECT * FROM folders WHERE id = ? AND user_id = ?',
           [folder_id, userId],
@@ -2350,6 +2357,7 @@ app.patch("/api/notes/:id", (req, res) => {
           }
         );
       } else {
+        // folder_id is null, undefined, or empty string - allow update (removes from folder if null)
         performUpdate();
       }
 
