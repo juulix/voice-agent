@@ -2047,37 +2047,57 @@ app.post("/api/notes/create", async (req, res) => {
 SVARĪGI: 
 - Vienmēr ģenerē īsu, nozīmīgu nosaukumu (maksimums 6-8 vārdi)
 - Nosaukums JĀBŪT pirmajā rindā ar prefiksu "Nosaukums:"
-- Pēc nosaukuma nāk strukturēts kopsavilkums ar bullet points
+- Pēc nosaukuma nāk strukturēts kopsavilkums
 - Grupē saturu pa tēmām, ja tādas ir
 - Kopsavilkums jābūt viegli lasāmam un skatāmam
 - NEDRĪKST izmantot transkripta sākumu kā nosaukumu
+
+FORMATĒŠANAS NOTEIKUMI:
+- Galvenās tēmas (kategorijas, sadaļas) - BEZ bullet points, tikai teksts, var beigties ar ":"
+- Detaļas, konkrēti punkti - AR bullet points (•)
+- Izmanto tukšas rindas, lai atdalītu galvenās tēmas
 
 Obligātais atbildes formāts (jāievēro precīzi):
 Nosaukums: [īss nosaukums šeit]
 
 Kopsavilkums:
-• Pirmais punkts
-• Otrais punkts`
+Galvenā tēma 1:
+• Detaļa 1
+• Detaļa 2
+
+Galvenā tēma 2:
+• Detaļa 3
+• Detaļa 4`
       : `You are a helper that generates note titles and structured summaries.
 
 IMPORTANT:
 - Always generate a short, meaningful title (maximum 6-8 words)
 - Title MUST be on the first line with prefix "Title:"
-- After title comes structured summary with bullet points
+- After title comes structured summary
 - Group content by topics if applicable
 - Summary should be easy to read and skim
 - MUST NOT use transcript start as title
+
+FORMATTING RULES:
+- Main topics (categories, sections) - WITHOUT bullet points, just text, may end with ":"
+- Details, specific points - WITH bullet points (•)
+- Use empty lines to separate main topics
 
 Required response format (must follow exactly):
 Title: [short title here]
 
 Summary:
-• First point
-• Second point`;
+Main Topic 1:
+• Detail 1
+• Detail 2
+
+Main Topic 2:
+• Detail 3
+• Detail 4`;
 
     const userPrompt = langHint === "lv"
-      ? `Transkripts:\n${transcript}\n\nĢenerē nosaukumu un strukturētu kopsavilkumu šim transkriptam. OBLIGĀTI izmanto formātu: "Nosaukums: [nosaukums]\n\nKopsavilkums:\n• ..." NEDRĪKST izmantot transkripta sākumu kā nosaukumu.`
-      : `Transcript:\n${transcript}\n\nGenerate a title and structured summary for this transcript. MUST use format: "Title: [title]\n\nSummary:\n• ..." MUST NOT use transcript start as title.`;
+      ? `Transkripts:\n${transcript}\n\nĢenerē nosaukumu un strukturētu kopsavilkumu šim transkriptam. OBLIGĀTI izmanto formātu: "Nosaukums: [nosaukums]\n\nKopsavilkums:\nGalvenā tēma:\n• Detaļa..." Galvenās tēmas BEZ bullet points, tikai detaļas AR bullet points. NEDRĪKST izmantot transkripta sākumu kā nosaukumu.`
+      : `Transcript:\n${transcript}\n\nGenerate a title and structured summary for this transcript. MUST use format: "Title: [title]\n\nSummary:\nMain Topic:\n• Detail..." Main topics WITHOUT bullet points, only details WITH bullet points. MUST NOT use transcript start as title.`;
 
     const gptResponse = await safeCreate(buildParams({
       model: DEFAULT_TEXT_MODEL,
