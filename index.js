@@ -2570,7 +2570,11 @@ app.post("/verify-subscription", async (req, res) => {
       "com.echotime2025.10.proyearly": "pro-yearly",
       "com.balssassistents.basic": "basic",
       "com.balssassistents.pro": "pro",
-      "com.balssassistents.proyearly": "pro-yearly"
+      "com.balssassistents.proyearly": "pro-yearly",
+      "com.balssassistents.basic.monthlyv2": "basic",
+      "com.balssassistents.basic.monthly": "basic",
+      "com.balssassistents.pro.monthly": "pro",
+      "com.balssassistents.pro.yearly": "pro-yearly"
     };
 
     let validationResult = null;
