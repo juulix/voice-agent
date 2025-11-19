@@ -134,3 +134,4 @@ Pēc katra testa salīdzini:
 
 
 
+
