@@ -368,7 +368,7 @@ const plans = {
   free:     { dailyLimit: 999999, monthlyLimit: 10 },        // Free: 10 ieraksti/mēn (nav dienas limita), default plāns
   basic:    { dailyLimit: 999999, monthlyLimit: 150 },       // Standarta: 150 ieraksti/mēn, 1.99 EUR/mēn
   pro:      { dailyLimit: 999999, monthlyLimit: 300 },       // Pro: 300 ieraksti/mēn, 2.99 EUR/mēn
-  "pro-yearly": { dailyLimit: 999999, monthlyLimit: null },  // Pro Yearly: Unlimited, 29.99 EUR/gadā
+  "pro-yearly": { dailyLimit: 999999, monthlyLimit: 300 },  // Pro Yearly: 300 ieraksti/mēn (ikmēneša limits), 29.99 EUR/gadā
   dev:      { dailyLimit: 999999, monthlyLimit: 999999 }     // Dev: bez limits (testēšanai)
 };
 const GRACE_DAILY = 2; // “kļūdu buferis” – ne-soda mēģinājumi dienā
@@ -818,7 +818,7 @@ function guessMime(filename) {
 }
 function getPlanLimits(planHeader) {
   const p = (planHeader || "").toLowerCase();
-  if (p === "pro-yearly") return { plan: "pro-yearly", dailyLimit: plans["pro-yearly"].dailyLimit, monthlyLimit: null };
+  if (p === "pro-yearly") return { plan: "pro-yearly", dailyLimit: plans["pro-yearly"].dailyLimit, monthlyLimit: 300 };
   if (p === "pro") return { plan: "pro", dailyLimit: plans.pro.dailyLimit, monthlyLimit: plans.pro.monthlyLimit };
   if (p === "basic") return { plan: "basic", dailyLimit: plans.basic.dailyLimit, monthlyLimit: plans.basic.monthlyLimit };
   if (p === "dev") return { plan: "dev", dailyLimit: plans.dev.dailyLimit, monthlyLimit: plans.dev.monthlyLimit };
@@ -1387,7 +1387,7 @@ app.get("/quota", async (req, res) => {
       requestId: req.requestId
     };
     
-    // Add monthly limits for plans that have them (basic, pro, but not pro-yearly which is unlimited)
+    // Add monthly limits for all plans (basic, pro, pro-yearly all have monthly limits that reset each month)
     if (limits.monthlyLimit !== null && limits.monthlyLimit !== undefined) {
       out.monthlyLimit = limits.monthlyLimit;
       out.monthlyUsed = u.monthly.used;
@@ -1696,7 +1696,7 @@ app.post("/ingest-audio", async (req, res) => {
     if (u.daily.used >= limits.dailyLimit) {
       return res.status(429).json({ error: "quota_exceeded", plan: limits.plan });
     }
-    // Check monthly limits for plans that have them (basic, pro, but not pro-yearly which is unlimited)
+    // Check monthly limits for all plans (basic, pro, pro-yearly all have monthly limits that reset each month)
     if (limits.monthlyLimit !== null && limits.monthlyLimit !== undefined) {
       if (u.monthly.used >= limits.monthlyLimit) {
         return res.status(429).json({ error: "monthly_quota_exceeded", plan: limits.plan });
