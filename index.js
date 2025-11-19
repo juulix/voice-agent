@@ -2042,12 +2042,42 @@ app.post("/api/notes/create", async (req, res) => {
 
     // Generate title and summary with GPT
     const systemPrompt = langHint === "lv" 
-      ? `Tu esi palīgs, kas ģenerē piezīmju nosaukumus un strukturētus kopsavilkumus. Ģenerē īsu, nozīmīgu nosaukumu (maksimums 6-8 vārdi) un strukturētu kopsavilkumu ar bullet points, grupējot saturu pa tēmām, ja tādas ir. Kopsavilkums jābūt viegli lasāmam un skatāmam.`
-      : `You are a helper that generates note titles and structured summaries. Generate a short, meaningful title (maximum 6-8 words) and a structured summary with bullet points, grouping content by topics if applicable. The summary should be easy to read and skim.`;
+      ? `Tu esi palīgs, kas ģenerē piezīmju nosaukumus un strukturētus kopsavilkumus. 
+
+SVARĪGI: 
+- Vienmēr ģenerē īsu, nozīmīgu nosaukumu (maksimums 6-8 vārdi)
+- Nosaukums JĀBŪT pirmajā rindā ar prefiksu "Nosaukums:"
+- Pēc nosaukuma nāk strukturēts kopsavilkums ar bullet points
+- Grupē saturu pa tēmām, ja tādas ir
+- Kopsavilkums jābūt viegli lasāmam un skatāmam
+- NEDRĪKST izmantot transkripta sākumu kā nosaukumu
+
+Obligātais atbildes formāts (jāievēro precīzi):
+Nosaukums: [īss nosaukums šeit]
+
+Kopsavilkums:
+• Pirmais punkts
+• Otrais punkts`
+      : `You are a helper that generates note titles and structured summaries.
+
+IMPORTANT:
+- Always generate a short, meaningful title (maximum 6-8 words)
+- Title MUST be on the first line with prefix "Title:"
+- After title comes structured summary with bullet points
+- Group content by topics if applicable
+- Summary should be easy to read and skim
+- MUST NOT use transcript start as title
+
+Required response format (must follow exactly):
+Title: [short title here]
+
+Summary:
+• First point
+• Second point`;
 
     const userPrompt = langHint === "lv"
-      ? `Transkripts:\n${transcript}\n\nĢenerē nosaukumu un strukturētu kopsavilkumu šim transkriptam.`
-      : `Transcript:\n${transcript}\n\nGenerate a title and structured summary for this transcript.`;
+      ? `Transkripts:\n${transcript}\n\nĢenerē nosaukumu un strukturētu kopsavilkumu šim transkriptam. OBLIGĀTI izmanto formātu: "Nosaukums: [nosaukums]\n\nKopsavilkums:\n• ..." NEDRĪKST izmantot transkripta sākumu kā nosaukumu.`
+      : `Transcript:\n${transcript}\n\nGenerate a title and structured summary for this transcript. MUST use format: "Title: [title]\n\nSummary:\n• ..." MUST NOT use transcript start as title.`;
 
     const gptResponse = await safeCreate(buildParams({
       model: DEFAULT_TEXT_MODEL,
@@ -2058,11 +2088,98 @@ app.post("/api/notes/create", async (req, res) => {
     }));
 
     const content = gptResponse.choices[0].message.content;
-    const lines = content.split('\n').filter(l => l.trim());
-    let title = lines[0] || 'Untitled Note';
-    let summary = lines.slice(1).join('\n').trim() || content;
+    
+    // Log raw GPT response for debugging
+    console.log(`[${requestId}] Raw GPT response:\n${content}\n---`);
+    
+    // Parse title and summary from response
+    let title = 'Untitled Note';
+    let summary = content;
+    
+    // PRIMARY: Try to extract title with explicit "Nosaukums:" or "Title:" prefix
+    let titleMatch = content.match(/(?:Nosaukums|Title):\s*(.+?)(?:\n|$)/i);
+    if (titleMatch && titleMatch[1]) {
+      title = titleMatch[1].trim();
+      // Remove title line from summary
+      summary = content.replace(/(?:Nosaukums|Title):\s*.+?(?:\n|$)/i, '').trim();
+      console.log(`[${requestId}] ✅ Extracted title from explicit format: "${title}"`);
+    } else {
+      // FALLBACK: First line as title (only if it doesn't match transcript start)
+      const lines = content.split('\n').filter(l => l.trim());
+      if (lines.length > 0) {
+        const firstLine = lines[0].replace(/^#+\s*/, '').trim();
+        
+        // Check if first line looks like a title (not summary content)
+        const isLikelyTitle = firstLine.length > 0 && 
+            firstLine.length <= 80 && 
+            !firstLine.match(/^(?:Kopsavilkums|Summary|Nosaukums|Title):/i) &&
+            !firstLine.startsWith('•') &&
+            !firstLine.startsWith('-') &&
+            !firstLine.startsWith('*');
+        
+        if (isLikelyTitle) {
+          // CRITICAL: Check if first line is NOT the transcript start
+          // Use more lenient comparison - check if first 30 chars match
+          const transcriptStart = transcript.substring(0, Math.min(transcript.length, 30)).trim().toLowerCase();
+          const firstLineLower = firstLine.substring(0, Math.min(firstLine.length, 30)).trim().toLowerCase();
+          
+          // Check similarity - if first 20 chars match, it's likely transcript start
+          const first20Transcript = transcriptStart.substring(0, 20);
+          const first20Line = firstLineLower.substring(0, 20);
+          const isTranscriptStart = first20Transcript === first20Line || 
+                                   transcriptStart.includes(firstLineLower.substring(0, 15)) ||
+                                   firstLineLower.includes(transcriptStart.substring(0, 15));
+          
+          if (!isTranscriptStart) {
+            // This looks like a real title from GPT
+            title = firstLine;
+            summary = lines.slice(1).join('\n').trim();
+            console.log(`[${requestId}] ✅ Using first line as title (fallback): "${title}"`);
+          } else {
+            console.log(`[${requestId}] ⚠️ First line matches transcript start, will use transcript fallback: "${firstLine}"`);
+            console.log(`[${requestId}] Transcript start: "${transcriptStart.substring(0, 30)}"`);
+          }
+        } else {
+          console.log(`[${requestId}] ⚠️ First line doesn't look like title: "${firstLine}"`);
+        }
+      }
+    }
+    
+    // Clean title - remove "Nosaukums:" or "Title:" prefix (multiple passes to catch all cases)
+    title = title.replace(/^(?:Nosaukums|Title):\s*/gi, '').trim();
+    title = title.replace(/^(?:Nosaukums|Title):\s*/gi, '').trim(); // Second pass in case of nested prefixes
     title = title.replace(/^#+\s*/, '').trim();
+    
+    // Final check - ensure no prefix remains
+    if (title.match(/^(?:Nosaukums|Title):\s*/i)) {
+      title = title.replace(/^(?:Nosaukums|Title):\s*/gi, '').trim();
+    }
+    
+    // Limit title length
     if (title.length > 60) title = title.substring(0, 57) + '...';
+    
+    // Ensure title is never empty - use transcript as LAST resort fallback
+    // But only if title is still "Untitled Note" or empty
+    if (!title || title.length === 0 || title === 'Untitled Note' || title === 'Nosaukums:' || title === 'Title:') {
+      console.log(`[${requestId}] ⚠️ Title is empty or invalid, using transcript fallback`);
+      // Generate title from transcript (first 8 words, max 50 chars)
+      const transcriptWords = transcript.split(/\s+/).slice(0, 8).join(' ');
+      title = transcriptWords.length > 50 
+        ? transcriptWords.substring(0, 47) + '...' 
+        : transcriptWords;
+      console.log(`[${requestId}] Fallback title: "${title}"`);
+    }
+    
+    // Clean summary - remove title line if still present
+    summary = summary.replace(/^(?:Nosaukums|Title):\s*.+?\n\n?/i, '').trim();
+    // Remove "Kopsavilkums:" or "Summary:" if it's the first line (keep the content)
+    summary = summary.replace(/^(?:Kopsavilkums|Summary):\s*/i, '').trim();
+    if (!summary || summary.length === 0) summary = transcript;
+    
+    // Log for debugging
+    console.log(`[${requestId}] Extracted title: "${title}"`);
+    console.log(`[${requestId}] Summary preview: "${summary.substring(0, 100)}..."`);
+    console.log(`[${requestId}] Summary length: ${summary.length}`);
 
     // Generate note ID
     const noteId = `note-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
