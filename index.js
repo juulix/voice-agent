@@ -461,11 +461,29 @@ async function parseWithGPT(text, requestId, nowISO, langHint = 'lv', modelName 
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowDate = tomorrow.toISOString().split('T')[0];
   
+  // Calculate relative times for examples (using toRigaISO for proper timezone)
+  const plus10min = new Date(rigaTime);
+  plus10min.setMinutes(plus10min.getMinutes() + 10);
+  const plus10minISO = toRigaISO(plus10min);
+  
+  const plus20min = new Date(rigaTime);
+  plus20min.setMinutes(plus20min.getMinutes() + 20);
+  const plus20minISO = toRigaISO(plus20min);
+  
+  const plus2hours = new Date(rigaTime);
+  plus2hours.setHours(plus2hours.getHours() + 2);
+  const plus2hoursISO = toRigaISO(plus2hours);
+  
+  const plus1hour = new Date(rigaTime);
+  plus1hour.setHours(plus1hour.getHours() + 1);
+  const plus1hourISO = toRigaISO(plus1hour);
+  
   const promptStart = Date.now();
   const systemPrompt = `Tu esi balss asistents latviešu valodai. Pārvērš lietotāja runu JSON formātā.
 
 WHISPER KĻŪDU LABOŠANA:
-Labo acīmredzamas kļūdas: "sastajā"→"sestajā" (26.), "pulkstenis"→"pulksten", "reit"/"rit"→"rīt". Ja labo, ieliec "corrected_input".
+Labo acīmredzamas kļūdas: "sastajā"→"sestajā" (26.), "pulkstenis"→"pulksten", "reit"/"rit"→"rīt", "grāmatu vedējs"→"grāmatvede". Ja labo, ieliec "corrected_input".
+SVARĪGI: Saglabā profesionālos terminus - "grāmatvede" (NE "grāmatu vedējs"), "grāmatvedis" (NE "grāmatu vedējs").
 
 KONTEKSTS:
 Datums: ${today}, Rīt: ${tomorrowDate}, Laiks: ${currentTime}, Diena: ${currentDay}, Timezone: Europe/Riga
@@ -511,6 +529,15 @@ DATUMU SAPRATNE:
 - "divdesmit sestajā novembrī"=26. novembris (NE 10:20!)
 - "20. novembrī plkst 14"=20. novembris 14:00 (NE 02:00!)
 - Ordinal skaitļi (sestajā, divdesmitajā)=datumi, NE laiki
+
+RELATĪVĀ LAIKA PARSĒŠANA (REMINDER):
+- "pēc X minūtēm" → pašreizējais laiks + X minūtes (aprēķināt precīzu datumu un laiku)
+- "pēc X stundām" → pašreizējais laiks + X stundas
+- "pēc X dienām" → pašreizējais laiks + X dienas
+- Parsē gan ciparus ("pēc 10 minūtēm"), gan skaitļu vārdus ("pēc desmit minūtēm", "pēc divdesmit minūtēm")
+- Parsē gan pilnos vārdus ("minūtēm", "stundām"), gan saīsinājumus ("min", "h")
+- Izmantot pašreizējo laiku: ${currentTime}, Datums: ${today}
+- SVARĪGI: Ja teksts satur "pēc X minūtēm/stundām/dienām", APRĒĶINĀT precīzu datumu un laiku, nevis atstāt start=null
 
 CALENDAR: Vienmēr pievieno end (+1h no start). Ja nav laika→hasTime=false, bet default 14:00.
 
@@ -563,6 +590,23 @@ Input: "atgādini rīt 9, 10 un 11"
 
 Input: "Atgādini man rīt deviņos desmit, serverī vakarā ir arī svarīgāks, ja pasaka, ka maini arī deviņos no rīta, viņš tāpat ieliek sešos vakarā"
 {"type":"reminder","description":"Atgādini man rīt deviņos desmit","notes":"Serverī vakarā ir arī svarīgāks, ja pasaka, ka maini arī deviņos no rīta, viņš tāpat ieliek sešos vakarā","start":"${tomorrowDate}T09:10:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv","corrected_input":null}
+
+RELATĪVĀ LAIKA PIEMĒRI (REMINDER):
+
+Input: "Atgādini pēc desmit minūtēm izmazgāt zobus"
+{"type":"reminder","description":"Izmazgāt zobus","notes":null,"start":"${plus10minISO}","end":null,"hasTime":true,"items":null,"lang":"lv","corrected_input":null}
+
+Input: "Atgādini pēc divdesmit minūtēm pārbaudīt e-pastu"
+{"type":"reminder","description":"Pārbaudīt e-pastu","notes":null,"start":"${plus20minISO}","end":null,"hasTime":true,"items":null,"lang":"lv","corrected_input":null}
+
+Input: "Atgādini pēc 10 minūtēm zvanīt grāmatvedei"
+{"type":"reminder","description":"Zvanīt grāmatvedei","notes":null,"start":"${plus10minISO}","end":null,"hasTime":true,"items":null,"lang":"lv","corrected_input":null}
+
+Input: "Atgādini pēc divām stundām zvanīt klientam"
+{"type":"reminder","description":"Zvanīt klientam","notes":null,"start":"${plus2hoursISO}","end":null,"hasTime":true,"items":null,"lang":"lv","corrected_input":null}
+
+Input: "Atgādini pēc stundas izslēgt krāsni"
+{"type":"reminder","description":"Izslēgt krāsni","notes":null,"start":"${plus1hourISO}","end":null,"hasTime":true,"items":null,"lang":"lv","corrected_input":null}
 
 SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgriez TIKAI PIRMO darbību (calendar vai shopping). Multi-item atbalsts ir TIKAI reminder tipam.`;
   const promptBuildTime = Date.now() - promptStart;
