@@ -2636,7 +2636,9 @@ app.post("/verify-subscription", async (req, res) => {
       "com.balssassistents.basic.monthlyv2": "basic",
       "com.balssassistents.basic.monthly": "basic",
       "com.balssassistents.pro.monthly": "pro",
-      "com.balssassistents.pro.yearly": "pro-yearly"
+      "com.balssassistents.pro.monthlyv2": "pro",
+      "com.balssassistents.pro.yearly": "pro-yearly",
+      "com.balssassistents.pro.yearlyv2": "pro-yearly"
     };
 
     let validationResult = null;
@@ -2724,9 +2726,10 @@ app.post("/verify-subscription", async (req, res) => {
       // For StoreKit 2, we accept the transaction ID as proof
       // In production, you should validate with Apple's App Store Server API v2
       // For now, we'll accept it if productId is provided
-      console.log(`[${requestId}] ⚠️ Transaction ID only (StoreKit 2): ${transactionId}`);
+      console.log(`[${requestId}] ⚠️ Transaction ID only (StoreKit 2): ${transactionId}, productId: ${productId || 'missing'}`);
       
       if (!productId) {
+        console.error(`[${requestId}] ❌ Missing productId for transaction: ${transactionId}`);
         return res.status(400).json({ 
           error: "missing_product_id", 
           message: "productId is required when using transactionId only",
@@ -2737,6 +2740,7 @@ app.post("/verify-subscription", async (req, res) => {
       validatedPlan = productToPlan[productId] || null;
       
       if (!validatedPlan) {
+        console.error(`[${requestId}] ❌ Unknown product ID: ${productId}, available IDs: ${Object.keys(productToPlan).join(', ')}`);
         return res.status(400).json({ 
           error: "invalid_product_id", 
           message: `Unknown product ID: ${productId}`,
