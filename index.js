@@ -223,10 +223,19 @@ db.serialize(() => {
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     name TEXT NOT NULL,
+    color TEXT,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, name)
   )`);
+  
+  // Add color column to existing folders table if it doesn't exist
+  db.run(`ALTER TABLE folders ADD COLUMN color TEXT`, (err) => {
+    // Ignore error if column already exists
+    if (err && !err.message.includes('duplicate column name')) {
+      console.error('Error adding color column to folders:', err);
+    }
+  });
   
   // Indexes for notes
   db.run(`CREATE INDEX IF NOT EXISTS idx_notes_user_id ON notes(user_id)`);
@@ -2579,6 +2588,7 @@ app.get("/api/folders", (req, res) => {
         folders: folders.map(folder => ({
           id: folder.id,
           name: folder.name,
+          color: folder.color || null,
           created_at: folder.created_at,
           updated_at: folder.updated_at
         }))
@@ -2590,7 +2600,7 @@ app.get("/api/folders", (req, res) => {
 // POST /api/folders
 app.post("/api/folders", (req, res) => {
   const userId = req.header("X-User-Id") || "anon";
-  const { name } = req.body;
+  const { name, color } = req.body;
 
   if (!name || name.trim().length === 0) {
     return res.status(400).json({ error: "folder_name_required" });
@@ -2600,8 +2610,8 @@ app.post("/api/folders", (req, res) => {
   const now = new Date().toISOString();
 
   db.run(
-    'INSERT INTO folders (id, user_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-    [folderId, userId, name.trim(), now, now],
+    'INSERT INTO folders (id, user_id, name, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [folderId, userId, name.trim(), color || null, now, now],
     function(err) {
       if (err) {
         if (err.message && err.message.includes('UNIQUE constraint')) {
@@ -2623,6 +2633,7 @@ app.post("/api/folders", (req, res) => {
           folder: {
             id: folder.id,
             name: folder.name,
+            color: folder.color || null,
             created_at: folder.created_at,
             updated_at: folder.updated_at
           }
