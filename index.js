@@ -2391,18 +2391,24 @@ Main Topic 2:
     const audioUrl = `/audio/notes/${noteId}.m4a`; // In production, upload to S3
 
     // Update Notes minutes quota (if duration is provided and limit exists)
+    // IMPORTANT: This must complete BEFORE sending response to ensure quota is updated
     if (durationMinutes > 0 && limits.notesMinutesLimit !== null && limits.notesMinutesLimit !== undefined) {
       const today = todayKeyRiga();
       const mKey = monthKeyRiga();
       
-      // Get or create quota_usage row for today
-      db.get(
-        `SELECT notes_minutes_used FROM quota_usage WHERE user_id = ? AND day_key = ?`,
-        [userId, today],
-        (err, row) => {
-          if (err) {
-            console.error(`[${requestId}] Failed to get quota_usage:`, err);
-          } else {
+      // Use Promise to ensure quota update completes before response
+      await new Promise((resolve, reject) => {
+        // Get or create quota_usage row for today
+        db.get(
+          `SELECT notes_minutes_used FROM quota_usage WHERE user_id = ? AND day_key = ?`,
+          [userId, today],
+          (err, row) => {
+            if (err) {
+              console.error(`[${requestId}] Failed to get quota_usage:`, err);
+              reject(err);
+              return;
+            }
+            
             const currentMinutes = (row?.notes_minutes_used || 0) + durationMinutes;
             
             // Update or insert quota_usage
@@ -2416,8 +2422,10 @@ Main Topic 2:
                 (err) => {
                   if (err) {
                     console.error(`[${requestId}] Failed to update Notes minutes quota:`, err);
+                    reject(err);
                   } else {
                     console.log(`[${requestId}] ✅ Updated Notes minutes quota: +${durationMinutes} min (total: ${currentMinutes})`);
+                    resolve();
                   }
                 }
               );
@@ -2430,15 +2438,20 @@ Main Topic 2:
                 (err) => {
                   if (err) {
                     console.error(`[${requestId}] Failed to insert Notes minutes quota:`, err);
+                    reject(err);
                   } else {
                     console.log(`[${requestId}] ✅ Inserted Notes minutes quota: +${durationMinutes} min`);
+                    resolve();
                   }
                 }
               );
             }
           }
-        }
-      );
+        );
+      }).catch((err) => {
+        // Log error but don't fail the request - quota update is important but not critical for response
+        console.error(`[${requestId}] ⚠️ Quota update failed (non-critical):`, err);
+      });
     }
 
     // Return note directly (temporary processing - no database storage)
