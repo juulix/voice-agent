@@ -202,12 +202,22 @@ db.serialize(() => {
     title TEXT NOT NULL,
     summary TEXT NOT NULL,
     transcript TEXT NOT NULL,
+    emoji TEXT,
     audio_url TEXT,
     folder_id TEXT,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE SET NULL
   )`);
+  
+  // Add emoji column to existing tables (migration)
+  db.run(`ALTER TABLE notes ADD COLUMN emoji TEXT`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.warn('⚠️ Migration warning:', err.message);
+    } else if (!err) {
+      console.log('✅ Added emoji column to notes table');
+    }
+  });
   
   db.run(`CREATE TABLE IF NOT EXISTS folders (
     id TEXT PRIMARY KEY,
@@ -2091,17 +2101,22 @@ app.post("/api/notes/create", async (req, res) => {
       return res.status(422).json({ error: "empty_transcript", requestId });
     }
 
-    // Generate title and summary with GPT
+    // Generate title, summary, and emoji with GPT
     const systemPrompt = langHint === "lv" 
-      ? `Tu esi palīgs, kas ģenerē piezīmju nosaukumus un strukturētus kopsavilkumus. 
+      ? `Tu esi palīgs, kas ģenerē piezīmju nosaukumus, strukturētus kopsavilkumus un atbilstošu emoji. 
 
 SVARĪGI: 
 - Vienmēr ģenerē īsu, nozīmīgu nosaukumu (maksimums 6-8 vārdi)
-- Nosaukums JĀBŪT pirmajā rindā ar prefiksu "Nosaukums:"
+- Vienmēr ģenerē VIENU emoji, kas vislabāk raksturo piezīmes saturu
+- Emoji JĀBŪT pirmajā rindā ar prefiksu "EMOJI:"
+- Nosaukums JĀBŪT otrajā rindā ar prefiksu "Nosaukums:"
 - Pēc nosaukuma nāk strukturēts kopsavilkums
 - Grupē saturu pa tēmām, ja tādas ir
 - Kopsavilkums jābūt viegli lasāmam un skatāmam
 - NEDRĪKST izmantot transkripta sākumu kā nosaukumu
+
+EMOJI PIEMĒRI:
+📝 (vispārīga piezīme), 💼 (darbs), 🏠 (mājas), 🛒 (pirkumi), 💡 (ideja), 📞 (zvani), 📅 (notikumi), 🎯 (mērķi), 📚 (mācības), 🍕 (ēdiens), 🚗 (ceļojumi), ⚕️ (veselība), 🎨 (māksla), 🎵 (mūzika), 🏃 (sports), 💻 (tehnoloģijas), 🔧 (remonts), 📊 (dati), 💰 (finanses), ❤️ (savienība), ⭐ (svarīgi), 🔥 (aktuāli), 🌍 (ceļojumi), 🎮 (spēles), ☕ (kafija), 🏖️ (atpūta), utt.
 
 FORMATĒŠANAS NOTEIKUMI:
 - Galvenās tēmas (kategorijas, sadaļas) - BEZ bullet points, tikai teksts, var beigties ar ":"
@@ -2109,6 +2124,7 @@ FORMATĒŠANAS NOTEIKUMI:
 - Izmanto tukšas rindas, lai atdalītu galvenās tēmas
 
 Obligātais atbildes formāts (jāievēro precīzi):
+EMOJI: [vienu emoji]
 Nosaukums: [īss nosaukums šeit]
 
 Kopsavilkums:
@@ -2119,15 +2135,20 @@ Galvenā tēma 1:
 Galvenā tēma 2:
 • Detaļa 3
 • Detaļa 4`
-      : `You are a helper that generates note titles and structured summaries.
+      : `You are a helper that generates note titles, structured summaries, and appropriate emoji.
 
 IMPORTANT:
 - Always generate a short, meaningful title (maximum 6-8 words)
-- Title MUST be on the first line with prefix "Title:"
+- Always generate ONE emoji that best represents the note content
+- Emoji MUST be on the first line with prefix "EMOJI:"
+- Title MUST be on the second line with prefix "Title:"
 - After title comes structured summary
 - Group content by topics if applicable
 - Summary should be easy to read and skim
 - MUST NOT use transcript start as title
+
+EMOJI EXAMPLES:
+📝 (general note), 💼 (work), 🏠 (home), 🛒 (shopping), 💡 (idea), 📞 (calls), 📅 (events), 🎯 (goals), 📚 (learning), 🍕 (food), 🚗 (travel), ⚕️ (health), 🎨 (art), 🎵 (music), 🏃 (sports), 💻 (tech), 🔧 (repair), 📊 (data), 💰 (finance), ❤️ (love), ⭐ (important), 🔥 (hot), 🌍 (travel), 🎮 (games), ☕ (coffee), 🏖️ (vacation), etc.
 
 FORMATTING RULES:
 - Main topics (categories, sections) - WITHOUT bullet points, just text, may end with ":"
@@ -2135,6 +2156,7 @@ FORMATTING RULES:
 - Use empty lines to separate main topics
 
 Required response format (must follow exactly):
+EMOJI: [one emoji]
 Title: [short title here]
 
 Summary:
@@ -2147,8 +2169,8 @@ Main Topic 2:
 • Detail 4`;
 
     const userPrompt = langHint === "lv"
-      ? `Transkripts:\n${transcript}\n\nĢenerē nosaukumu un strukturētu kopsavilkumu šim transkriptam. OBLIGĀTI izmanto formātu: "Nosaukums: [nosaukums]\n\nKopsavilkums:\nGalvenā tēma:\n• Detaļa..." Galvenās tēmas BEZ bullet points, tikai detaļas AR bullet points. NEDRĪKST izmantot transkripta sākumu kā nosaukumu.`
-      : `Transcript:\n${transcript}\n\nGenerate a title and structured summary for this transcript. MUST use format: "Title: [title]\n\nSummary:\nMain Topic:\n• Detail..." Main topics WITHOUT bullet points, only details WITH bullet points. MUST NOT use transcript start as title.`;
+      ? `Transkripts:\n${transcript}\n\nĢenerē emoji, nosaukumu un strukturētu kopsavilkumu šim transkriptam. OBLIGĀTI izmanto formātu: "EMOJI: [emoji]\nNosaukums: [nosaukums]\n\nKopsavilkums:\nGalvenā tēma:\n• Detaļa..." Galvenās tēmas BEZ bullet points, tikai detaļas AR bullet points. NEDRĪKST izmantot transkripta sākumu kā nosaukumu.`
+      : `Transcript:\n${transcript}\n\nGenerate emoji, title and structured summary for this transcript. MUST use format: "EMOJI: [emoji]\nTitle: [title]\n\nSummary:\nMain Topic:\n• Detail..." Main topics WITHOUT bullet points, only details WITH bullet points. MUST NOT use transcript start as title.`;
 
     const gptResponse = await safeCreate(buildParams({
       model: DEFAULT_TEXT_MODEL,
@@ -2163,16 +2185,39 @@ Main Topic 2:
     // Log raw GPT response for debugging
     console.log(`[${requestId}] Raw GPT response:\n${content}\n---`);
     
-    // Parse title and summary from response
+    // Parse emoji, title and summary from response
+    let emoji = '📝'; // Default fallback
     let title = 'Untitled Note';
     let summary = content;
+    
+    // Try to extract emoji - look for "EMOJI:" prefix first
+    const emojiPrefixMatch = content.match(/EMOJI:\s*(.+?)(?:\n|$)/i);
+    if (emojiPrefixMatch) {
+      const emojiText = emojiPrefixMatch[1].trim();
+      // Extract first emoji character using Unicode ranges
+      const emojiChar = emojiText.match(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}]/u);
+      if (emojiChar) {
+        emoji = emojiChar[0];
+        console.log(`[${requestId}] ✅ Extracted emoji: "${emoji}"`);
+      }
+    } else {
+      // Fallback: look for emoji at the start of content
+      const emojiStartMatch = content.match(/^([\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}])\s/u);
+      if (emojiStartMatch) {
+        emoji = emojiStartMatch[1];
+        console.log(`[${requestId}] ✅ Extracted emoji from start: "${emoji}"`);
+      }
+    }
     
     // PRIMARY: Try to extract title with explicit "Nosaukums:" or "Title:" prefix
     let titleMatch = content.match(/(?:Nosaukums|Title):\s*(.+?)(?:\n|$)/i);
     if (titleMatch && titleMatch[1]) {
       title = titleMatch[1].trim();
-      // Remove title line from summary
-      summary = content.replace(/(?:Nosaukums|Title):\s*.+?(?:\n|$)/i, '').trim();
+      // Remove emoji and title lines from summary
+      summary = content
+        .replace(/EMOJI:\s*.+?(?:\n|$)/i, '')
+        .replace(/(?:Nosaukums|Title):\s*.+?(?:\n|$)/i, '')
+        .trim();
       console.log(`[${requestId}] ✅ Extracted title from explicit format: "${title}"`);
     } else {
       // FALLBACK: First line as title (only if it doesn't match transcript start)
@@ -2216,7 +2261,8 @@ Main Topic 2:
       }
     }
     
-    // Clean title - remove "Nosaukums:" or "Title:" prefix (multiple passes to catch all cases)
+    // Clean title - remove emoji, "Nosaukums:" or "Title:" prefix (multiple passes to catch all cases)
+    title = title.replace(/^[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}]\s*/u, '').trim();
     title = title.replace(/^(?:Nosaukums|Title):\s*/gi, '').trim();
     title = title.replace(/^(?:Nosaukums|Title):\s*/gi, '').trim(); // Second pass in case of nested prefixes
     title = title.replace(/^#+\s*/, '').trim();
@@ -2241,13 +2287,17 @@ Main Topic 2:
       console.log(`[${requestId}] Fallback title: "${title}"`);
     }
     
-    // Clean summary - remove title line if still present
-    summary = summary.replace(/^(?:Nosaukums|Title):\s*.+?\n\n?/i, '').trim();
+    // Clean summary - remove emoji, title line if still present
+    summary = summary
+      .replace(/EMOJI:\s*.+?(?:\n|$)/i, '')
+      .replace(/^(?:Nosaukums|Title):\s*.+?\n\n?/i, '')
+      .trim();
     // Remove "Kopsavilkums:" or "Summary:" if it's the first line (keep the content)
     summary = summary.replace(/^(?:Kopsavilkums|Summary):\s*/i, '').trim();
     if (!summary || summary.length === 0) summary = transcript;
     
     // Log for debugging
+    console.log(`[${requestId}] Extracted emoji: "${emoji}"`);
     console.log(`[${requestId}] Extracted title: "${title}"`);
     console.log(`[${requestId}] Summary preview: "${summary.substring(0, 100)}..."`);
     console.log(`[${requestId}] Summary length: ${summary.length}`);
@@ -2259,9 +2309,9 @@ Main Topic 2:
 
     // Save to database
     db.run(
-      `INSERT INTO notes (id, user_id, title, summary, transcript, audio_url, folder_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [noteId, userId, title, summary, transcript, audioUrl, null, now, now],
+      `INSERT INTO notes (id, user_id, title, summary, transcript, emoji, audio_url, folder_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [noteId, userId, title, summary, transcript, emoji, audioUrl, null, now, now],
       function(err) {
         if (err) {
           console.error(`[${requestId}] Database error:`, err);
@@ -2280,6 +2330,7 @@ Main Topic 2:
               title: note.title,
               summary: note.summary,
               transcript: note.transcript,
+              emoji: note.emoji || '📝',  // Default emoji if not set
               audio_url: note.audio_url,
               folder_id: note.folder_id,
               created_at: note.created_at,
@@ -2324,6 +2375,7 @@ app.get("/api/notes", (req, res) => {
         title: note.title,
         summary: note.summary,
         transcript: note.transcript,
+        emoji: note.emoji || '📝',  // Default emoji if not set
         audio_url: note.audio_url,
         folder_id: note.folder_id,
         created_at: note.created_at,
@@ -2355,6 +2407,7 @@ app.get("/api/notes/:id", (req, res) => {
           title: note.title,
           summary: note.summary,
           transcript: note.transcript,
+          emoji: note.emoji || '📝',  // Default emoji if not set
           audio_url: note.audio_url,
           folder_id: note.folder_id,
           created_at: note.created_at,
@@ -2369,7 +2422,7 @@ app.get("/api/notes/:id", (req, res) => {
 app.patch("/api/notes/:id", (req, res) => {
   const userId = req.header("X-User-Id") || "anon";
   const noteId = req.params.id;
-  const { title, summary, folder_id } = req.body;
+  const { title, summary, folder_id, emoji } = req.body;
 
   // Check if note exists
   db.get(
@@ -2418,6 +2471,10 @@ app.patch("/api/notes/:id", (req, res) => {
           updates.push('summary = ?');
           params.push(summary);
         }
+        if (emoji !== undefined) {
+          updates.push('emoji = ?');
+          params.push(emoji);
+        }
         if (folder_id !== undefined) {
           updates.push('folder_id = ?');
           params.push(folder_id);
@@ -2458,6 +2515,7 @@ app.patch("/api/notes/:id", (req, res) => {
                     title: note.title,
                     summary: note.summary,
                     transcript: note.transcript,
+                    emoji: note.emoji || '📝',  // Default emoji if not set
                     audio_url: note.audio_url,
                     folder_id: note.folder_id,
                     created_at: note.created_at,
