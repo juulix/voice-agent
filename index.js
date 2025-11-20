@@ -168,10 +168,20 @@ db.serialize(() => {
     daily_used INTEGER DEFAULT 0,
     daily_grace_used INTEGER DEFAULT 0,
     monthly_used INTEGER DEFAULT 0,
+    notes_minutes_used INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, day_key)
   )`);
+  
+  // Add notes_minutes_used column if it doesn't exist (migration)
+  db.run(`ALTER TABLE quota_usage ADD COLUMN notes_minutes_used INTEGER DEFAULT 0`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.warn('⚠️ Migration warning:', err.message);
+    } else if (!err) {
+      console.log('✅ Added notes_minutes_used column to quota_usage table');
+    }
+  });
   
   // Create indexes for performance
   db.run(`CREATE INDEX IF NOT EXISTS idx_user_day ON quota_usage(user_id, day_key)`);
@@ -384,11 +394,11 @@ app.use((req, res, next) => {
 
 /* ===== PLANS (fiksēta konfigurācija kodā) ===== */
 const plans = {
-  free:     { dailyLimit: 999999, monthlyLimit: 10 },        // Free: 10 ieraksti/mēn (nav dienas limita), default plāns
-  basic:    { dailyLimit: 999999, monthlyLimit: 150 },       // Standarta: 150 ieraksti/mēn, 1.99 EUR/mēn
-  pro:      { dailyLimit: 999999, monthlyLimit: 300 },       // Pro: 300 ieraksti/mēn, 2.99 EUR/mēn
-  "pro-yearly": { dailyLimit: 999999, monthlyLimit: 300 },  // Pro Yearly: 300 ieraksti/mēn (ikmēneša limits), 29.99 EUR/gadā
-  dev:      { dailyLimit: 999999, monthlyLimit: 999999 }     // Dev: bez limits (testēšanai)
+  free:     { dailyLimit: 999999, monthlyLimit: 10, notesMinutesLimit: 3 },        // Free: 10 ieraksti/mēn, 3 min Notes/mēn
+  basic:    { dailyLimit: 999999, monthlyLimit: 150, notesMinutesLimit: 15 },       // Standarta: 150 ieraksti/mēn, 15 min Notes/mēn, 1.99 EUR/mēn
+  pro:      { dailyLimit: 999999, monthlyLimit: 300, notesMinutesLimit: 120 },       // Pro: 300 ieraksti/mēn, 120 min Notes/mēn, 2.99 EUR/mēn
+  "pro-yearly": { dailyLimit: 999999, monthlyLimit: 300, notesMinutesLimit: 120 },  // Pro Yearly: 300 ieraksti/mēn, 120 min Notes/mēn (ikmēneša limits), 29.99 EUR/gadā
+  dev:      { dailyLimit: 999999, monthlyLimit: 999999, notesMinutesLimit: null }     // Dev: bez limits (testēšanai)
 };
 const GRACE_DAILY = 2; // “kļūdu buferis” – ne-soda mēģinājumi dienā
 
@@ -881,11 +891,11 @@ function guessMime(filename) {
 }
 function getPlanLimits(planHeader) {
   const p = (planHeader || "").toLowerCase();
-  if (p === "pro-yearly") return { plan: "pro-yearly", dailyLimit: plans["pro-yearly"].dailyLimit, monthlyLimit: 300 };
-  if (p === "pro") return { plan: "pro", dailyLimit: plans.pro.dailyLimit, monthlyLimit: plans.pro.monthlyLimit };
-  if (p === "basic") return { plan: "basic", dailyLimit: plans.basic.dailyLimit, monthlyLimit: plans.basic.monthlyLimit };
-  if (p === "dev") return { plan: "dev", dailyLimit: plans.dev.dailyLimit, monthlyLimit: plans.dev.monthlyLimit };
-  return { plan: "free", dailyLimit: plans.free.dailyLimit, monthlyLimit: plans.free.monthlyLimit }; // Default: free
+  if (p === "pro-yearly") return { plan: "pro-yearly", dailyLimit: plans["pro-yearly"].dailyLimit, monthlyLimit: 300, notesMinutesLimit: plans["pro-yearly"].notesMinutesLimit };
+  if (p === "pro") return { plan: "pro", dailyLimit: plans.pro.dailyLimit, monthlyLimit: plans.pro.monthlyLimit, notesMinutesLimit: plans.pro.notesMinutesLimit };
+  if (p === "basic") return { plan: "basic", dailyLimit: plans.basic.dailyLimit, monthlyLimit: plans.basic.monthlyLimit, notesMinutesLimit: plans.basic.notesMinutesLimit };
+  if (p === "dev") return { plan: "dev", dailyLimit: plans.dev.dailyLimit, monthlyLimit: plans.dev.monthlyLimit, notesMinutesLimit: plans.dev.notesMinutesLimit };
+  return { plan: "free", dailyLimit: plans.free.dailyLimit, monthlyLimit: plans.free.monthlyLimit, notesMinutesLimit: plans.free.notesMinutesLimit }; // Default: free
 }
 async function getUserUsage(userId, planHeader) {
   const limits = getPlanLimits(planHeader);
@@ -915,12 +925,13 @@ async function getUserUsage(userId, planHeader) {
               }
               resolve({
                 u: {
-                  plan: limits.plan,
-                  daily: { dayKey: today, used: 0, graceUsed: 0 },
-                  monthly: { monthKey: mKey, used: 0 }
-                },
-                limits
-              });
+                plan: limits.plan,
+                daily: { dayKey: today, used: 0, graceUsed: 0 },
+                monthly: { monthKey: mKey, used: 0 },
+                notesMinutes: { monthKey: mKey, used: 0 }
+              },
+              limits
+            });
             }
           );
         } else {
@@ -933,12 +944,16 @@ async function getUserUsage(userId, planHeader) {
           }
           
           // Calculate actual monthly usage from SUM of daily_used for all plans with monthly limits
-          calculateMonthlyUsage(userId, mKey).then(totalMonthly => {
+          Promise.all([
+            calculateMonthlyUsage(userId, mKey),
+            calculateNotesMinutesUsage(userId, mKey)
+          ]).then(([totalMonthly, totalNotesMinutes]) => {
             resolve({
               u: {
                 plan: limits.plan,
                 daily: { dayKey: row.day_key, used: row.daily_used, graceUsed: row.daily_grace_used },
-                monthly: { monthKey: row.month_key, used: totalMonthly }
+                monthly: { monthKey: row.month_key, used: totalMonthly },
+                notesMinutes: { monthKey: row.month_key, used: totalNotesMinutes }
               },
               limits
             });
@@ -960,6 +975,22 @@ async function calculateMonthlyUsage(userId, monthKey) {
       (err, row) => {
         if (err) reject(err);
         else resolve(row?.total_monthly_used || 0);
+      }
+    );
+  });
+}
+
+// Calculate actual monthly Notes minutes usage from SUM of notes_minutes_used
+async function calculateNotesMinutesUsage(userId, monthKey) {
+  return new Promise((resolve, reject) => {
+    db.get(
+      `SELECT COALESCE(SUM(notes_minutes_used), 0) as total_notes_minutes_used 
+       FROM quota_usage 
+       WHERE user_id = ? AND month_key = ?`,
+      [userId, monthKey],
+      (err, row) => {
+        if (err) reject(err);
+        else resolve(row?.total_notes_minutes_used || 0);
       }
     );
   });
@@ -1462,6 +1493,13 @@ app.get("/quota", async (req, res) => {
       out.monthlyLimit = limits.monthlyLimit;
       out.monthlyUsed = u.monthly.used;
       out.monthlyRemaining = Math.max(0, limits.monthlyLimit - u.monthly.used);
+    }
+    
+    // Add Notes minutes limits
+    if (limits.notesMinutesLimit !== null && limits.notesMinutesLimit !== undefined) {
+      out.notesMinutesLimit = limits.notesMinutesLimit;
+      out.notesMinutesUsed = u.notesMinutes?.used || 0;
+      out.notesMinutesRemaining = Math.max(0, limits.notesMinutesLimit - (u.notesMinutes?.used || 0));
     }
     
     return res.json(out);
@@ -2067,6 +2105,24 @@ app.post("/api/notes/create", async (req, res) => {
     }
 
     const userId = req.header("X-User-Id") || "anon";
+    const planHdr = req.header("X-Plan") || "free";
+    
+    // Get user usage and limits
+    const { u, limits } = await getUserUsage(userId, planHdr);
+    
+    // Check Notes minutes quota before processing
+    if (limits.notesMinutesLimit !== null && limits.notesMinutesLimit !== undefined) {
+      const notesMinutesUsed = u.notesMinutes?.used || 0;
+      if (notesMinutesUsed >= limits.notesMinutesLimit) {
+        return res.status(429).json({ 
+          error: "notes_minutes_quota_exceeded", 
+          plan: limits.plan,
+          notesMinutesLimit: limits.notesMinutesLimit,
+          notesMinutesUsed: notesMinutesUsed,
+          requestId 
+        });
+      }
+    }
 
     // Parse multipart form data
     const fields = {};
@@ -2096,6 +2152,10 @@ app.post("/api/notes/create", async (req, res) => {
     }
 
     const langHint = (req.header("X-Lang") || fields.lang || "lv").toLowerCase();
+    
+    // Get duration in seconds (for quota tracking)
+    const durationSeconds = parseInt(fields.durationSeconds || "0", 10);
+    const durationMinutes = Math.ceil(durationSeconds / 60); // Round up to nearest minute
 
     // Transcribe audio
     const file = await toFile(fileBuf, filename, { type: guessMime(filename) });
@@ -2326,6 +2386,57 @@ Main Topic 2:
           console.error(`[${requestId}] Database error:`, err);
           Sentry.captureException(err);
           return res.status(500).json({ error: "database_error", requestId });
+        }
+
+        // Update Notes minutes quota (if duration is provided and limit exists)
+        if (durationMinutes > 0 && limits.notesMinutesLimit !== null && limits.notesMinutesLimit !== undefined) {
+          const today = todayKeyRiga();
+          const mKey = monthKeyRiga();
+          
+          // Get or create quota_usage row for today
+          db.get(
+            `SELECT notes_minutes_used FROM quota_usage WHERE user_id = ? AND day_key = ?`,
+            [userId, today],
+            (err, row) => {
+              if (err) {
+                console.error(`[${requestId}] Failed to get quota_usage:`, err);
+              } else {
+                const currentMinutes = (row?.notes_minutes_used || 0) + durationMinutes;
+                
+                // Update or insert quota_usage
+                if (row) {
+                  // Update existing row
+                  db.run(
+                    `UPDATE quota_usage 
+                     SET notes_minutes_used = ?, updated_at = CURRENT_TIMESTAMP 
+                     WHERE user_id = ? AND day_key = ?`,
+                    [currentMinutes, userId, today],
+                    (err) => {
+                      if (err) {
+                        console.error(`[${requestId}] Failed to update Notes minutes quota:`, err);
+                      } else {
+                        console.log(`[${requestId}] ✅ Updated Notes minutes quota: +${durationMinutes} min (total: ${currentMinutes})`);
+                      }
+                    }
+                  );
+                } else {
+                  // Insert new row
+                  db.run(
+                    `INSERT INTO quota_usage (user_id, plan, day_key, month_key, daily_used, daily_grace_used, monthly_used, notes_minutes_used)
+                     VALUES (?, ?, ?, ?, 0, 0, 0, ?)`,
+                    [userId, limits.plan, today, mKey, durationMinutes],
+                    (err) => {
+                      if (err) {
+                        console.error(`[${requestId}] Failed to insert Notes minutes quota:`, err);
+                      } else {
+                        console.log(`[${requestId}] ✅ Inserted Notes minutes quota: +${durationMinutes} min`);
+                      }
+                    }
+                  );
+                }
+              }
+            }
+          );
         }
 
         // Return note
