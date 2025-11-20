@@ -2116,25 +2116,8 @@ app.post("/api/notes/create", async (req, res) => {
 
     const userId = req.header("X-User-Id") || "anon";
     const planHdr = req.header("X-Plan") || "free";
-    
-    // Get user usage and limits
-    const { u, limits } = await getUserUsage(userId, planHdr);
-    
-    // Check Notes minutes quota before processing
-    if (limits.notesMinutesLimit !== null && limits.notesMinutesLimit !== undefined) {
-      const notesMinutesUsed = u.notesMinutes?.used || 0;
-      if (notesMinutesUsed >= limits.notesMinutesLimit) {
-        return res.status(429).json({ 
-          error: "notes_minutes_quota_exceeded", 
-          plan: limits.plan,
-          notesMinutesLimit: limits.notesMinutesLimit,
-          notesMinutesUsed: notesMinutesUsed,
-          requestId 
-        });
-      }
-    }
 
-    // Parse multipart form data
+    // Parse multipart form data FIRST (to get durationSeconds)
     const fields = {};
     let fileBuf = Buffer.alloc(0);
     let filename = "audio.m4a";
@@ -2166,6 +2149,27 @@ app.post("/api/notes/create", async (req, res) => {
     // Get duration in seconds (for quota tracking)
     const durationSeconds = parseInt(fields.durationSeconds || "0", 10);
     const durationMinutes = Math.ceil(durationSeconds / 60); // Round up to nearest minute
+
+    // Get user usage and limits (AFTER parsing durationSeconds)
+    const { u, limits } = await getUserUsage(userId, planHdr);
+    
+    // Check Notes minutes quota AFTER parsing durationSeconds
+    // This allows us to check if the user has enough minutes for THIS specific recording
+    if (limits.notesMinutesLimit !== null && limits.notesMinutesLimit !== undefined) {
+      const notesMinutesUsed = u.notesMinutes?.used || 0;
+      const wouldExceed = (notesMinutesUsed + durationMinutes) > limits.notesMinutesLimit;
+      
+      if (wouldExceed) {
+        return res.status(429).json({ 
+          error: "notes_minutes_quota_exceeded", 
+          plan: limits.plan,
+          notesMinutesLimit: limits.notesMinutesLimit,
+          notesMinutesUsed: notesMinutesUsed,
+          requestedMinutes: durationMinutes,
+          requestId 
+        });
+      }
+    }
 
     // Transcribe audio
     const file = await toFile(fileBuf, filename, { type: guessMime(filename) });
