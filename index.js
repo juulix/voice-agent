@@ -217,8 +217,18 @@ db.serialize(() => {
     folder_id TEXT,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME,  -- Auto-delete timestamp (temporary processing)
     FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE SET NULL
   )`);
+  
+  // Add expires_at column if it doesn't exist (migration)
+  db.run(`ALTER TABLE notes ADD COLUMN expires_at DATETIME`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.warn('⚠️ Migration warning:', err.message);
+    } else if (!err) {
+      console.log('✅ Added expires_at column to notes table');
+    }
+  });
   
   // Add emoji column to existing tables (migration)
   db.run(`ALTER TABLE notes ADD COLUMN emoji TEXT`, (err) => {
@@ -2376,91 +2386,75 @@ Main Topic 2:
     const now = new Date().toISOString();
     const audioUrl = `/audio/notes/${noteId}.m4a`; // In production, upload to S3
 
-    // Save to database
-    db.run(
-      `INSERT INTO notes (id, user_id, title, summary, transcript, emoji, audio_url, folder_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [noteId, userId, title, summary, transcript, emoji, audioUrl, null, now, now],
-      function(err) {
-        if (err) {
-          console.error(`[${requestId}] Database error:`, err);
-          Sentry.captureException(err);
-          return res.status(500).json({ error: "database_error", requestId });
-        }
-
-        // Update Notes minutes quota (if duration is provided and limit exists)
-        if (durationMinutes > 0 && limits.notesMinutesLimit !== null && limits.notesMinutesLimit !== undefined) {
-          const today = todayKeyRiga();
-          const mKey = monthKeyRiga();
-          
-          // Get or create quota_usage row for today
-          db.get(
-            `SELECT notes_minutes_used FROM quota_usage WHERE user_id = ? AND day_key = ?`,
-            [userId, today],
-            (err, row) => {
-              if (err) {
-                console.error(`[${requestId}] Failed to get quota_usage:`, err);
-              } else {
-                const currentMinutes = (row?.notes_minutes_used || 0) + durationMinutes;
-                
-                // Update or insert quota_usage
-                if (row) {
-                  // Update existing row
-                  db.run(
-                    `UPDATE quota_usage 
-                     SET notes_minutes_used = ?, updated_at = CURRENT_TIMESTAMP 
-                     WHERE user_id = ? AND day_key = ?`,
-                    [currentMinutes, userId, today],
-                    (err) => {
-                      if (err) {
-                        console.error(`[${requestId}] Failed to update Notes minutes quota:`, err);
-                      } else {
-                        console.log(`[${requestId}] ✅ Updated Notes minutes quota: +${durationMinutes} min (total: ${currentMinutes})`);
-                      }
-                    }
-                  );
-                } else {
-                  // Insert new row
-                  db.run(
-                    `INSERT INTO quota_usage (user_id, plan, day_key, month_key, daily_used, daily_grace_used, monthly_used, notes_minutes_used)
-                     VALUES (?, ?, ?, ?, 0, 0, 0, ?)`,
-                    [userId, limits.plan, today, mKey, durationMinutes],
-                    (err) => {
-                      if (err) {
-                        console.error(`[${requestId}] Failed to insert Notes minutes quota:`, err);
-                      } else {
-                        console.log(`[${requestId}] ✅ Inserted Notes minutes quota: +${durationMinutes} min`);
-                      }
-                    }
-                  );
+    // Update Notes minutes quota (if duration is provided and limit exists)
+    if (durationMinutes > 0 && limits.notesMinutesLimit !== null && limits.notesMinutesLimit !== undefined) {
+      const today = todayKeyRiga();
+      const mKey = monthKeyRiga();
+      
+      // Get or create quota_usage row for today
+      db.get(
+        `SELECT notes_minutes_used FROM quota_usage WHERE user_id = ? AND day_key = ?`,
+        [userId, today],
+        (err, row) => {
+          if (err) {
+            console.error(`[${requestId}] Failed to get quota_usage:`, err);
+          } else {
+            const currentMinutes = (row?.notes_minutes_used || 0) + durationMinutes;
+            
+            // Update or insert quota_usage
+            if (row) {
+              // Update existing row
+              db.run(
+                `UPDATE quota_usage 
+                 SET notes_minutes_used = ?, updated_at = CURRENT_TIMESTAMP 
+                 WHERE user_id = ? AND day_key = ?`,
+                [currentMinutes, userId, today],
+                (err) => {
+                  if (err) {
+                    console.error(`[${requestId}] Failed to update Notes minutes quota:`, err);
+                  } else {
+                    console.log(`[${requestId}] ✅ Updated Notes minutes quota: +${durationMinutes} min (total: ${currentMinutes})`);
+                  }
                 }
-              }
+              );
+            } else {
+              // Insert new row
+              db.run(
+                `INSERT INTO quota_usage (user_id, plan, day_key, month_key, daily_used, daily_grace_used, monthly_used, notes_minutes_used)
+                 VALUES (?, ?, ?, ?, 0, 0, 0, ?)`,
+                [userId, limits.plan, today, mKey, durationMinutes],
+                (err) => {
+                  if (err) {
+                    console.error(`[${requestId}] Failed to insert Notes minutes quota:`, err);
+                  } else {
+                    console.log(`[${requestId}] ✅ Inserted Notes minutes quota: +${durationMinutes} min`);
+                  }
+                }
+              );
             }
-          );
-        }
-
-        // Return note
-        db.get('SELECT * FROM notes WHERE id = ?', [noteId], (err, note) => {
-          if (err || !note) {
-            return res.status(500).json({ error: "failed_to_retrieve_note", requestId });
           }
-          res.json({
-            note: {
-              id: note.id,
-              title: note.title,
-              summary: note.summary,
-              transcript: note.transcript,
-              emoji: note.emoji || '📝',  // Default emoji if not set
-              audio_url: note.audio_url,
-              folder_id: note.folder_id,
-              created_at: note.created_at,
-              updated_at: note.updated_at
-            },
-            requestId
-          });
-        });
-      }
-    );
+        }
+      );
+    }
+
+    // Return note directly (temporary processing - no database storage)
+    // Transcript is only returned in response, not stored permanently
+    res.json({
+      note: {
+        id: noteId,
+        title: title,
+        summary: summary,
+        transcript: transcript,
+        emoji: emoji || '📝',  // Default emoji if not set
+        audio_url: null,  // Audio is stored locally on device, not on server
+        folder_id: null,
+        created_at: now,
+        updated_at: now
+      },
+      requestId
+    });
+    
+    console.log(`[${requestId}] ✅ Note processed and returned (temporary processing - transcript not stored on server)`);
   } catch (error) {
     console.error(`[${requestId}] Error:`, error);
     Sentry.captureException(error);
@@ -2469,218 +2463,37 @@ Main Topic 2:
 });
 
 // GET /api/notes
+// Notes are stored locally on device only (temporary processing - no server storage)
 app.get("/api/notes", (req, res) => {
-  const userId = req.header("X-User-Id") || "anon";
-  const folderId = req.query.folder_id;
-
-  let query = 'SELECT * FROM notes WHERE user_id = ?';
-  const params = [userId];
-
-  if (folderId) {
-    query += ' AND folder_id = ?';
-    params.push(folderId);
-  }
-
-  query += ' ORDER BY created_at DESC';
-
-  db.all(query, params, (err, notes) => {
-    if (err) {
-      console.error('Error fetching notes:', err);
-      Sentry.captureException(err);
-      return res.status(500).json({ error: "database_error" });
-    }
-    res.json({
-      notes: notes.map(note => ({
-        id: note.id,
-        title: note.title,
-        summary: note.summary,
-        transcript: note.transcript,
-        emoji: note.emoji || '📝',  // Default emoji if not set
-        audio_url: note.audio_url,
-        folder_id: note.folder_id,
-        created_at: note.created_at,
-        updated_at: note.updated_at
-      }))
-    });
+  // Notes are not stored on server - return empty array
+  // All notes are stored locally on the device
+  res.json({
+    notes: []
   });
 });
 
 // GET /api/notes/:id
+// Notes are stored locally on device only (temporary processing - no server storage)
 app.get("/api/notes/:id", (req, res) => {
-  const userId = req.header("X-User-Id") || "anon";
-  const noteId = req.params.id;
-
-  db.get(
-    'SELECT * FROM notes WHERE id = ? AND user_id = ?',
-    [noteId, userId],
-    (err, note) => {
-      if (err) {
-        Sentry.captureException(err);
-        return res.status(500).json({ error: "database_error" });
-      }
-      if (!note) {
-        return res.status(404).json({ error: "note_not_found" });
-      }
-      res.json({
-        note: {
-          id: note.id,
-          title: note.title,
-          summary: note.summary,
-          transcript: note.transcript,
-          emoji: note.emoji || '📝',  // Default emoji if not set
-          audio_url: note.audio_url,
-          folder_id: note.folder_id,
-          created_at: note.created_at,
-          updated_at: note.updated_at
-        }
-      });
-    }
-  );
+  // Notes are not stored on server - return 404
+  // All notes are stored locally on the device
+  res.status(404).json({ error: "note_not_found" });
 });
 
 // PATCH /api/notes/:id
+// Notes are stored locally on device only (temporary processing - no server storage)
 app.patch("/api/notes/:id", (req, res) => {
-  const userId = req.header("X-User-Id") || "anon";
-  const noteId = req.params.id;
-  const { title, summary, folder_id, emoji } = req.body;
-
-  // Check if note exists
-  db.get(
-    'SELECT * FROM notes WHERE id = ? AND user_id = ?',
-    [noteId, userId],
-    (err, existingNote) => {
-      if (err) {
-        Sentry.captureException(err);
-        return res.status(500).json({ error: "database_error" });
-      }
-      if (!existingNote) {
-        return res.status(404).json({ error: "note_not_found" });
-      }
-
-      // Validate folder if provided (folder_id can be null to remove from folder)
-      if (folder_id !== undefined && folder_id !== null && folder_id !== "") {
-        db.get(
-          'SELECT * FROM folders WHERE id = ? AND user_id = ?',
-          [folder_id, userId],
-          (err, folder) => {
-            if (err) {
-              Sentry.captureException(err);
-              return res.status(500).json({ error: "database_error" });
-            }
-            if (!folder) {
-              return res.status(400).json({ error: "folder_not_found" });
-            }
-            performUpdate();
-          }
-        );
-      } else {
-        // folder_id is null, undefined, or empty string - allow update (removes from folder if null)
-        performUpdate();
-      }
-
-      function performUpdate() {
-        // Build update query
-        const updates = [];
-        const params = [];
-
-        if (title !== undefined) {
-          updates.push('title = ?');
-          params.push(title);
-        }
-        if (summary !== undefined) {
-          updates.push('summary = ?');
-          params.push(summary);
-        }
-        if (emoji !== undefined) {
-          updates.push('emoji = ?');
-          params.push(emoji);
-        }
-        if (folder_id !== undefined) {
-          updates.push('folder_id = ?');
-          params.push(folder_id);
-        }
-
-        if (updates.length === 0) {
-          return res.status(400).json({ error: "no_fields_to_update" });
-        }
-
-        updates.push('updated_at = ?');
-        params.push(new Date().toISOString());
-        params.push(noteId);
-        params.push(userId);
-
-        db.run(
-          `UPDATE notes SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
-          params,
-          function(err) {
-            if (err) {
-              Sentry.captureException(err);
-              return res.status(500).json({ error: "database_error" });
-            }
-            // Fetch updated note
-            db.get(
-              'SELECT * FROM notes WHERE id = ? AND user_id = ?',
-              [noteId, userId],
-              (err, note) => {
-                if (err) {
-                  Sentry.captureException(err);
-                  return res.status(500).json({ error: "database_error" });
-                }
-                if (!note) {
-                  return res.status(500).json({ error: "failed_to_retrieve_note" });
-                }
-                res.json({
-                  note: {
-                    id: note.id,
-                    title: note.title,
-                    summary: note.summary,
-                    transcript: note.transcript,
-                    emoji: note.emoji || '📝',  // Default emoji if not set
-                    audio_url: note.audio_url,
-                    folder_id: note.folder_id,
-                    created_at: note.created_at,
-                    updated_at: note.updated_at
-                  }
-                });
-              }
-            );
-          }
-        );
-      }
-    }
-  );
+  // Notes are not stored on server - return 404
+  // All notes are stored locally on the device
+  res.status(404).json({ error: "note_not_found" });
 });
 
 // DELETE /api/notes/:id
+// Notes are stored locally on device only (temporary processing - no server storage)
 app.delete("/api/notes/:id", (req, res) => {
-  const userId = req.header("X-User-Id") || "anon";
-  const noteId = req.params.id;
-
-  db.get(
-    'SELECT * FROM notes WHERE id = ? AND user_id = ?',
-    [noteId, userId],
-    (err, note) => {
-      if (err) {
-        Sentry.captureException(err);
-        return res.status(500).json({ error: "database_error" });
-      }
-      if (!note) {
-        return res.status(404).json({ error: "note_not_found" });
-      }
-
-      // Delete audio file if exists (in production, delete from S3)
-      // TODO: Implement S3 deletion
-
-      // Delete from database
-      db.run('DELETE FROM notes WHERE id = ? AND user_id = ?', [noteId, userId], (err) => {
-        if (err) {
-          Sentry.captureException(err);
-          return res.status(500).json({ error: "database_error" });
-        }
-        res.status(200).json({ message: "note_deleted" });
-      });
-    }
-  );
+  // Notes are not stored on server - return success (deletion is handled locally)
+  // All notes are stored locally on the device
+  res.status(200).json({ message: "note_deleted" });
 });
 
 // GET /api/folders
