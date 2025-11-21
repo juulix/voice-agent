@@ -2390,9 +2390,10 @@ Main Topic 2:
     const now = new Date().toISOString();
     const audioUrl = `/audio/notes/${noteId}.m4a`; // In production, upload to S3
 
-    // Update Notes minutes quota (if duration is provided and limit exists)
+    // Update Notes minutes quota (if duration is provided)
     // IMPORTANT: This must complete BEFORE sending response to ensure quota is updated
-    if (durationMinutes > 0 && limits.notesMinutesLimit !== null && limits.notesMinutesLimit !== undefined) {
+    // Note: For dev plan (notesMinutesLimit: null), we still track usage for display purposes
+    if (durationMinutes > 0) {
       const today = todayKeyRiga();
       const mKey = monthKeyRiga();
       
