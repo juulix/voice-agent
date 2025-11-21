@@ -2757,6 +2757,9 @@ app.post("/verify-subscription", async (req, res) => {
       };
       
       console.log(`[${requestId}] ✅ Transaction ID accepted: productId=${productId}, plan=${validatedPlan}`);
+      
+      // Note: StoreKit 2 transactions are accepted based on transaction ID + product ID
+      // For production, consider implementing App Store Server API v2 validation
     }
 
     if (!validatedPlan) {
