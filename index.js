@@ -433,6 +433,30 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000);
 
+/* ===== AI RESPONSE CACHE ===== */
+const aiCache = new Map();
+
+// Simple hash function for cache keys
+function hashString(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return hash.toString(36);
+}
+
+// Clean expired cache entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of aiCache.entries()) {
+    if (value.expires < now) {
+      aiCache.delete(key);
+    }
+  }
+}, 5 * 60 * 1000);
+
 /* ===== Helpers: laiks, mime, plāni ===== */
 function todayKeyRiga(d = new Date()) {
   const tz = "Europe/Riga";
@@ -486,6 +510,17 @@ function toRigaISO(d) {
 // Used for GPT-4.1-mini, GPT-5-mini, GPT-5-nano
 async function parseWithGPT(text, requestId, nowISO, langHint = 'lv', modelName = DEFAULT_TEXT_MODEL) {
   const gptStart = Date.now();
+  
+  // Create cache key: model + normalized text + langHint
+  const normalizedText = text.toLowerCase().trim();
+  const cacheKey = `${modelName}:${hashString(normalizedText)}:${langHint}`;
+  
+  // Check cache first
+  const cached = aiCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {
+    console.log(`[${requestId}] ✅ AI cache hit for ${modelName}`);
+    return cached.result;
+  }
   
   const now = new Date(nowISO);
   const rigaTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Riga' }));
@@ -679,7 +714,22 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
     // Note: GPT-5 models don't support: top_p, logprobs, frequency_penalty, presence_penalty
     
     // Use safeCreate to handle max_tokens → max_completion_tokens conversion if needed
-    let completion = await safeCreate(apiParams);
+    // Add timeout: 20 seconds for GPT calls
+    let completion;
+    try {
+      completion = await Promise.race([
+        safeCreate(apiParams),
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('GPT API request timeout after 20s')), 20000);
+        })
+      ]);
+    } catch (timeoutError) {
+      if (timeoutError.message.includes('timeout')) {
+        console.error(`[${requestId}] ❌ GPT API timeout after 20s`);
+        throw new Error('GPT API request timeout');
+      }
+      throw timeoutError;
+    }
     let apiCallTime = Date.now() - apiCallStart;
 
     // Log completion structure for debugging
@@ -713,7 +763,13 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
       };
       
       try {
-        completion = await safeCreate(retryParams);
+        // Add timeout for retry as well
+        completion = await Promise.race([
+          safeCreate(retryParams),
+          new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('GPT API retry timeout after 20s')), 20000);
+          })
+        ]);
         apiCallTime = Date.now() - apiCallStart; // Update total time
         response = completion.choices[0]?.message?.content;
         
@@ -804,7 +860,7 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
           source: modelName
         }));
         
-        return {
+        const multiResult = {
           type: "reminders", // iOS app expects "reminders" type
           lang: parsed.lang || 'lv',
           reminders: reminders,
@@ -813,12 +869,20 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
           confidence: 0.95,
           source: modelName
         };
+        
+        // Cache the result (1 hour TTL)
+        aiCache.set(cacheKey, {
+          result: multiResult,
+          expires: Date.now() + (60 * 60 * 1000) // 1 hour
+        });
+        
+        return multiResult;
       }
       // If mixed types, return only first non-reminder task (fall through to single item)
       if (reminderTasks.length === 0 && parsed.tasks.length > 0) {
         // All tasks are non-reminder, return first one
         const firstTask = parsed.tasks[0];
-        return {
+        const firstTaskResult = {
           type: firstTask.type,
           description: firstTask.description,
           notes: firstTask.notes || null,
@@ -833,11 +897,19 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
           confidence: 0.95,
           source: modelName
         };
+        
+        // Cache the result (1 hour TTL)
+        aiCache.set(cacheKey, {
+          result: firstTaskResult,
+          expires: Date.now() + (60 * 60 * 1000) // 1 hour
+        });
+        
+        return firstTaskResult;
       }
     }
     
     // Single item (backward compatible)
-    return {
+    const result = {
       type: parsed.type,
       description: parsed.description,
       notes: parsed.notes || null,
@@ -852,6 +924,14 @@ SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgri
       confidence: 0.95,
       source: modelName
     };
+    
+    // Cache the result (1 hour TTL)
+    aiCache.set(cacheKey, {
+      result: result,
+      expires: Date.now() + (60 * 60 * 1000) // 1 hour
+    });
+    
+    return result;
     
   } catch (error) {
     console.error(`[${requestId}] GPT parsing error (${modelName}):`, error);
@@ -1369,10 +1449,11 @@ function isValidCalendarJson(obj) {
 /* ===== RATE LIMITING ===== */
 import rateLimit from 'express-rate-limit';
 
+// IP-based rate limiter (existing)
 const limiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: 60, // 60 requests per minute
-  keyGenerator: (req) => req.userId || req.ip,
+  keyGenerator: (req) => req.ip,
   message: { 
     error: "rate_limit_exceeded",
     requestId: (req) => req.requestId,
@@ -1382,7 +1463,22 @@ const limiter = rateLimit({
   legacyHeaders: false
 });
 
-app.use('/ingest-audio', limiter);
+// Per-user rate limiter (additional protection)
+const userLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 20, // 20 requests per user per minute
+  keyGenerator: (req) => req.userId || req.ip,
+  message: { 
+    error: "user_rate_limit_exceeded",
+    requestId: (req) => req.requestId,
+    retryAfter: "1 minute"
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => !req.userId // Skip if no userId (use IP limiter instead)
+});
+
+app.use('/ingest-audio', limiter, userLimiter);
 
 /* ===== HEALTH ENDPOINTS ===== */
 app.get("/", (req, res) => res.json({ 
@@ -1874,14 +1970,26 @@ app.post("/ingest-audio", async (req, res) => {
     
     while (transcriptionRetryCount <= transcriptionMaxRetries) {
       try {
-        tr = await openai.audio.transcriptions.create({
-      model: "gpt-4o-mini-transcribe",
-      file
-    });
+        // Add timeout: 30 seconds for Whisper (longer audio files)
+        tr = await Promise.race([
+          openai.audio.transcriptions.create({
+            model: "gpt-4o-mini-transcribe",
+            file
+          }),
+          new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Whisper API request timeout after 30s')), 30000);
+          })
+        ]);
         break; // Success
       } catch (error) {
         transcriptionRetryCount++;
-        if (transcriptionRetryCount > transcriptionMaxRetries) throw error;
+        if (transcriptionRetryCount > transcriptionMaxRetries) {
+          if (error.message.includes('timeout')) {
+            console.error(`[${req.requestId}] ❌ Whisper API timeout after 30s`);
+            throw new Error('Whisper API request timeout');
+          }
+          throw error;
+        }
         
         // Exponential backoff: 500ms, 1000ms, 2000ms
         const delay = 500 * Math.pow(2, transcriptionRetryCount - 1);
@@ -2027,14 +2135,22 @@ app.post("/ingest-audio", async (req, res) => {
     finalResult.normalized_transcript = norm;
     finalResult.confidence = score;
     
-    // Quota counting
+    // Quota counting (async - don't block response)
     console.time(`[${req.requestId}] quota-update`);
     const quotaStart = Date.now();
     u.daily.used += 1;
     operationsTotal.inc({ status: "success", plan: limits.plan }, 1);
-    await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed, limits.monthlyLimit || 0);
-    console.timeEnd(`[${req.requestId}] quota-update`);
-    timings.quotaUpdate = Date.now() - quotaStart;
+    // Update quota asynchronously (don't await - send response immediately)
+    updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed, limits.monthlyLimit || 0)
+      .then(() => {
+        console.timeEnd(`[${req.requestId}] quota-update`);
+        timings.quotaUpdate = Date.now() - quotaStart;
+      })
+      .catch(err => {
+        console.error(`[${req.requestId}] Quota update failed (non-critical):`, err);
+        // Don't throw - quota update is not critical for response
+      });
+    timings.quotaUpdate = 0; // Set to 0 since we're not waiting
     databaseOperations.inc({ operation: "update", table: "quota_usage" }, 1);
     quotaUsage.inc({ plan: limits.plan, type: "daily" }, 1);
     if (limits.plan === "pro") { quotaUsage.inc({ plan: limits.plan, type: "monthly" }, 1); }
