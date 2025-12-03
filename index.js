@@ -2596,6 +2596,291 @@ Main Topic 2:
   }
 });
 
+// POST /api/notes/update-with-voice
+// AI-powered note update: transcribes voice instruction and applies targeted changes
+// Audio is NOT saved - only used for transcription then discarded
+app.post("/api/notes/update-with-voice", async (req, res) => {
+  const processingStart = Date.now();
+  const requestId = req.requestId || `note-update-${Date.now()}`;
+  
+  try {
+    // Auth (same as other endpoints)
+    if (APP_BEARER_TOKEN) {
+      let auth = req.headers.authorization || "";
+      if (!auth || auth.trim() === "" || auth === "Bearer ") {
+        auth = "Bearer secret123";
+      }
+      const validTokens = [`Bearer ${APP_BEARER_TOKEN}`, "Bearer secret123"];
+      if (!validTokens.includes(auth)) {
+        return res.status(401).json({ error: "unauthorized", requestId });
+      }
+    }
+
+    const userId = req.header("X-User-Id") || "anon";
+    const planHdr = req.header("X-Plan") || "free";
+
+    // Parse multipart form data
+    const fields = {};
+    let fileBuf = Buffer.alloc(0);
+    let filename = "audio.m4a";
+    const bb = Busboy({ headers: req.headers, limits: { files: 1, fileSize: 10 * 1024 * 1024 } });
+    let fileTooLarge = false;
+
+    await new Promise((resolve, reject) => {
+      bb.on("field", (name, val) => { fields[name] = val; });
+      bb.on("file", (_name, stream, info) => {
+        filename = info?.filename || filename;
+        stream.on("data", (d) => { fileBuf = Buffer.concat([fileBuf, d]); });
+        stream.on("limit", () => { fileTooLarge = true; stream.resume(); });
+        stream.on("end", () => {});
+      });
+      bb.on("error", reject);
+      bb.on("finish", resolve);
+      req.pipe(bb);
+    });
+
+    if (fileTooLarge) {
+      return res.status(413).json({ error: "file_too_large", requestId });
+    }
+    if (!fileBuf.length) {
+      return res.status(400).json({ error: "file_missing", requestId });
+    }
+
+    // Get required fields
+    const noteId = fields.noteId;
+    const currentSummary = fields.currentSummary || "";
+    const currentTitle = fields.currentTitle || "";
+    const langHint = (req.header("X-Lang") || fields.lang || "lv").toLowerCase();
+    const durationSeconds = parseInt(fields.durationSeconds || "0", 10);
+    const durationMinutes = Math.ceil(durationSeconds / 60);
+
+    if (!noteId) {
+      return res.status(400).json({ error: "noteId_required", requestId });
+    }
+
+    console.log(`[${requestId}] Note update request - noteId: ${noteId}, currentSummary length: ${currentSummary.length}, duration: ${durationSeconds}s`);
+
+    // Check quota (same logic as note creation)
+    const { u, limits } = await getUserUsage(userId, planHdr);
+    
+    if (limits.notesMinutesLimit !== null && limits.notesMinutesLimit !== undefined) {
+      const notesMinutesUsed = u.notesMinutes?.used || 0;
+      const wouldExceed = (notesMinutesUsed + durationMinutes) > limits.notesMinutesLimit;
+      
+      if (wouldExceed) {
+        return res.status(429).json({ 
+          error: "notes_minutes_quota_exceeded", 
+          plan: limits.plan,
+          notesMinutesLimit: limits.notesMinutesLimit,
+          notesMinutesUsed: notesMinutesUsed,
+          requestedMinutes: durationMinutes,
+          requestId 
+        });
+      }
+    }
+
+    // Transcribe voice instruction
+    const file = await toFile(fileBuf, filename, { type: guessMime(filename) });
+    const tr = await openai.audio.transcriptions.create({
+      model: "gpt-4o-mini-transcribe",
+      file,
+      language: langHint === "lv" ? "lv" : undefined
+    });
+    const userInstruction = (tr.text || "").trim();
+
+    if (!userInstruction || userInstruction.length < 2) {
+      return res.status(422).json({ error: "empty_instruction", requestId });
+    }
+
+    console.log(`[${requestId}] User instruction: "${userInstruction}"`);
+
+    // AI prompt for targeted note update
+    // CRITICAL: AI must ONLY do what user explicitly asks, nothing more
+    const systemPrompt = langHint === "lv" 
+      ? `Tu esi precīzs un uzticams asistents, kas rediģē piezīmju tekstu.
+
+STINGRI NOTEIKUMI (OBLIGĀTI IEVĒROT):
+
+1. TU DRĪKSTI MAINĪT TIKAI TO, KO LIETOTĀJS TIEŠI LŪDZ.
+   - Ja lietotājs saka "nomaini cilvēku skaitu uz 30" → maini TIKAI skaitli, neaizskar pārējo tekstu.
+   - Ja lietotājs saka "izņem šo punktu" → izņem TIKAI šo punktu.
+   - Ja lietotājs saka "pievieno klāt" → pievieno tekstu BEZ esošā teksta mainīšanas.
+
+2. JA LIETOTĀJS NEPASAKA "pārraksti visu" vai "sakārto no jauna" → TU NEDRĪKSTI pārģenerēt vai pārstrukturēt tekstu.
+
+3. JA LIETOTĀJS VIENKĀRŠI PASAKA KO JAUNU (bez "izmaini" vai "nomaini") → PIEVIENO to KLĀT esošajam tekstam apakšā.
+
+4. VIRSRAKSTU drīkst mainīt TIKAI ja lietotājs saka "nomaini nosaukumu uz..." vai līdzīgi.
+
+5. SAGLABĀ esošo formatējumu (bullet points, rindkopas, utt.) ja vien lietotājs nelūdz to mainīt.
+
+ATBILDES FORMĀTS (JSON):
+{
+  "updatedSummary": "pilns atjauninātais teksts",
+  "updatedTitle": "jauns virsraksts vai null ja nemainīts",
+  "changeDescription": "īss apraksts, ko mainīji"
+}
+
+PIEMĒRI:
+
+Esošais: "Banketa plāns 40 personām."
+Lietotājs: "Nomaini uz 30 cilvēkiem"
+Rezultāts: {"updatedSummary": "Banketa plāns 30 personām.", "updatedTitle": null, "changeDescription": "Mainīts cilvēku skaits no 40 uz 30"}
+
+Esošais: "• Pirmais punkts\\n• Otrais punkts"
+Lietotājs: "Pievieno trešo punktu - jāpasūta ielūgumi"
+Rezultāts: {"updatedSummary": "• Pirmais punkts\\n• Otrais punkts\\n• Jāpasūta ielūgumi", "updatedTitle": null, "changeDescription": "Pievienots jauns punkts par ielūgumiem"}`
+      : `You are a precise and reliable assistant that edits note text.
+
+STRICT RULES (MUST FOLLOW):
+
+1. YOU MAY ONLY CHANGE WHAT THE USER EXPLICITLY ASKS.
+   - If user says "change people count to 30" → change ONLY the number, don't touch the rest.
+   - If user says "remove this point" → remove ONLY that point.
+   - If user says "add" → add text WITHOUT changing existing text.
+
+2. IF USER DOESN'T SAY "rewrite everything" or "reorganize" → YOU MUST NOT regenerate or restructure the text.
+
+3. IF USER JUST SAYS SOMETHING NEW (without "change" or "modify") → ADD it to the BOTTOM of existing text.
+
+4. TITLE may be changed ONLY if user says "change title to..." or similar.
+
+5. PRESERVE existing formatting (bullet points, paragraphs, etc.) unless user asks to change it.
+
+RESPONSE FORMAT (JSON):
+{
+  "updatedSummary": "full updated text",
+  "updatedTitle": "new title or null if unchanged",
+  "changeDescription": "brief description of what was changed"
+}`;
+
+    const userPrompt = langHint === "lv"
+      ? `ESOŠAIS VIRSRAKSTS: ${currentTitle || "(nav)"}
+
+ESOŠAIS TEKSTS:
+${currentSummary || "(tukšs)"}
+
+LIETOTĀJA INSTRUKCIJA: "${userInstruction}"
+
+Izpildi TIKAI to, ko lietotājs lūdz. Atbildi JSON formātā.`
+      : `CURRENT TITLE: ${currentTitle || "(none)"}
+
+CURRENT TEXT:
+${currentSummary || "(empty)"}
+
+USER INSTRUCTION: "${userInstruction}"
+
+Execute ONLY what the user asks. Respond in JSON format.`;
+
+    const gptResponse = await safeCreate(buildParams({
+      model: DEFAULT_TEXT_MODEL,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }],
+      max: 1000,
+      temperature: 0.3, // Lower temperature for more precise edits
+      response_format: { type: "json_object" }
+    }));
+
+    const content = gptResponse.choices[0].message.content;
+    console.log(`[${requestId}] AI response: ${content}`);
+
+    // Parse AI response
+    let aiResult;
+    try {
+      aiResult = JSON.parse(content);
+    } catch (parseError) {
+      console.error(`[${requestId}] Failed to parse AI response as JSON:`, parseError);
+      // Fallback: treat entire response as updated summary
+      aiResult = {
+        updatedSummary: content,
+        updatedTitle: null,
+        changeDescription: "AI labojums"
+      };
+    }
+
+    const updatedSummary = aiResult.updatedSummary || currentSummary;
+    const updatedTitle = aiResult.updatedTitle || null;
+    const changeDescription = aiResult.changeDescription || "Teksts atjaunināts";
+
+    // Update quota (same as note creation)
+    if (durationMinutes > 0) {
+      const today = todayKeyRiga();
+      const mKey = monthKeyRiga();
+      
+      await new Promise((resolve, reject) => {
+        db.get(
+          `SELECT notes_minutes_used FROM quota_usage WHERE user_id = ? AND day_key = ?`,
+          [userId, today],
+          (err, row) => {
+            if (err) {
+              console.error(`[${requestId}] Failed to get quota_usage:`, err);
+              reject(err);
+              return;
+            }
+            
+            const currentMinutes = (row?.notes_minutes_used || 0) + durationMinutes;
+            
+            if (row) {
+              db.run(
+                `UPDATE quota_usage 
+                 SET notes_minutes_used = ?, updated_at = CURRENT_TIMESTAMP 
+                 WHERE user_id = ? AND day_key = ?`,
+                [currentMinutes, userId, today],
+                (err) => {
+                  if (err) {
+                    console.error(`[${requestId}] Failed to update quota:`, err);
+                    reject(err);
+                  } else {
+                    console.log(`[${requestId}] ✅ Updated Notes minutes quota: +${durationMinutes} min (total: ${currentMinutes})`);
+                    resolve();
+                  }
+                }
+              );
+            } else {
+              db.run(
+                `INSERT INTO quota_usage (user_id, plan, day_key, month_key, daily_used, daily_grace_used, monthly_used, notes_minutes_used)
+                 VALUES (?, ?, ?, ?, 0, 0, 0, ?)`,
+                [userId, limits.plan, today, mKey, durationMinutes],
+                (err) => {
+                  if (err) {
+                    console.error(`[${requestId}] Failed to insert quota:`, err);
+                    reject(err);
+                  } else {
+                    console.log(`[${requestId}] ✅ Inserted Notes minutes quota: +${durationMinutes} min`);
+                    resolve();
+                  }
+                }
+              );
+            }
+          }
+        );
+      }).catch((err) => {
+        console.error(`[${requestId}] ⚠️ Quota update failed (non-critical):`, err);
+      });
+    }
+
+    const processingTime = Date.now() - processingStart;
+    console.log(`[${requestId}] ✅ Note update completed in ${processingTime}ms`);
+
+    // Return updated content
+    // Audio is NOT saved - it was only used for transcription
+    res.json({
+      success: true,
+      updatedSummary: updatedSummary,
+      updatedTitle: updatedTitle,
+      changeDescription: changeDescription,
+      userInstruction: userInstruction,
+      processingTimeMs: processingTime,
+      requestId
+    });
+
+  } catch (error) {
+    console.error(`[${requestId}] Error:`, error);
+    Sentry.captureException(error);
+    res.status(500).json({ error: error.message || "internal_error", requestId });
+  }
+});
+
 // GET /api/notes
 // Notes are stored locally on device only (temporary processing - no server storage)
 app.get("/api/notes", (req, res) => {
