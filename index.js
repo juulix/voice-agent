@@ -2318,20 +2318,21 @@ EMOJI PIEMĒRI:
 📝 (vispārīga piezīme), 💼 (darbs), 🏠 (mājas), 🛒 (pirkumi), 💡 (ideja), 📞 (zvani), 📅 (notikumi), 🎯 (mērķi), 📚 (mācības), 🍕 (ēdiens), 🚗 (ceļojumi), ⚕️ (veselība), 🎨 (māksla), 🎵 (mūzika), 🏃 (sports), 💻 (tehnoloģijas), 🔧 (remonts), 📊 (dati), 💰 (finanses), ❤️ (savienība), ⭐ (svarīgi), 🔥 (aktuāli), 🌍 (ceļojumi), 🎮 (spēles), ☕ (kafija), 🏖️ (atpūta), utt.
 
 FORMATĒŠANAS NOTEIKUMI:
-- Galvenās tēmas (kategorijas, sadaļas) - BEZ bullet points, tikai teksts, var beigties ar ":"
+- Galvenās tēmas (kategorijas, sadaļas) - **treknrakstā** ar dubultām zvaigznītēm: **Tēmas nosaukums:**
 - Detaļas, konkrēti punkti - AR bullet points (•)
 - Izmanto tukšas rindas, lai atdalītu galvenās tēmas
+- SVARĪGI: Virsrakstiem VIENMĒR izmanto **teksts** formātu
 
 Obligātais atbildes formāts (jāievēro precīzi):
 EMOJI: [vienu emoji]
 Nosaukums: [īss nosaukums šeit]
 
 Kopsavilkums:
-Galvenā tēma 1:
+**Galvenā tēma 1:**
 • Detaļa 1
 • Detaļa 2
 
-Galvenā tēma 2:
+**Galvenā tēma 2:**
 • Detaļa 3
 • Detaļa 4`
       : `You are a helper that generates note titles, structured summaries, and appropriate emoji.
@@ -2350,20 +2351,21 @@ EMOJI EXAMPLES:
 📝 (general note), 💼 (work), 🏠 (home), 🛒 (shopping), 💡 (idea), 📞 (calls), 📅 (events), 🎯 (goals), 📚 (learning), 🍕 (food), 🚗 (travel), ⚕️ (health), 🎨 (art), 🎵 (music), 🏃 (sports), 💻 (tech), 🔧 (repair), 📊 (data), 💰 (finance), ❤️ (love), ⭐ (important), 🔥 (hot), 🌍 (travel), 🎮 (games), ☕ (coffee), 🏖️ (vacation), etc.
 
 FORMATTING RULES:
-- Main topics (categories, sections) - WITHOUT bullet points, just text, may end with ":"
+- Main topics (categories, sections) - in **bold** with double asterisks: **Topic name:**
 - Details, specific points - WITH bullet points (•)
 - Use empty lines to separate main topics
+- IMPORTANT: Headings MUST ALWAYS use **text** format
 
 Required response format (must follow exactly):
 EMOJI: [one emoji]
 Title: [short title here]
 
 Summary:
-Main Topic 1:
+**Main Topic 1:**
 • Detail 1
 • Detail 2
 
-Main Topic 2:
+**Main Topic 2:**
 • Detail 3
 • Detail 4`;
 
@@ -2712,7 +2714,7 @@ STINGRI NOTEIKUMI (OBLIGĀTI IEVĒROT):
 
 4. VIRSRAKSTU drīkst mainīt TIKAI ja lietotājs saka "nomaini nosaukumu uz..." vai līdzīgi.
 
-5. SAGLABĀ esošo formatējumu (bullet points, rindkopas, utt.) ja vien lietotājs nelūdz to mainīt.
+5. SAGLABĀ esošo formatējumu (**treknraksts ar dubultām zvaigznītēm**, bullet points, rindkopas, utt.) ja vien lietotājs nelūdz to mainīt. Ja tekstā ir **virsraksti**, tie jāsaglabā.
 
 ATBILDES FORMĀTS (JSON):
 {
@@ -2745,7 +2747,7 @@ STRICT RULES (MUST FOLLOW):
 
 4. TITLE may be changed ONLY if user says "change title to..." or similar.
 
-5. PRESERVE existing formatting (bullet points, paragraphs, etc.) unless user asks to change it.
+5. PRESERVE existing formatting (**bold text with double asterisks**, bullet points, paragraphs, etc.) unless user asks to change it. If text has **headings**, they must be preserved.
 
 RESPONSE FORMAT (JSON):
 {
