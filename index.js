@@ -564,24 +564,31 @@ Datums: ${today}, Rīt: ${tomorrowDate}, Laiks: ${currentTime}, Diena: ${current
 
 PRASĪBAS:
 1. Atbildē TIKAI JSON - bez markdown, bez teksta
-2. Viena darbība: reminder VAI calendar VAI shopping
+2. Viena darbība: reminder VAI calendar VAI shopping VAI call_contact
 3. VAIRĀKAS darbības: TIKAI reminder tipam, BET TIKAI ja ir vairāki skaidri norādīti pulksteņa laiki
    - Piemēram: "uztaisi trīs atgādinājumus: rīt plkst 9, pirmdien plkst 14, trešdien plkst 18" → 3 reminderi
    - Piemēram: "atgādini rīt 9, 10 un 11" → 3 reminderi
    - NEIZVEIDOT vairākus reminderus, ja teksts ir viens garš teikums ar vienu laiku (piem., "atgādini man rīt deviņos desmit, serverī vakarā ir arī svarīgāks" → 1 reminders)
-4. Ja VIENA darbība: JSON: {type, description, notes, start, end, hasTime, items, lang, corrected_input}
+4. Ja VIENA darbība: JSON: {type, description, notes, start, end, hasTime, items, contact_name, contact_normalized, lang, corrected_input}
+   - reminder/calendar: start, end, hasTime, notes (optional)
+   - shopping: items (required)
+   - call_contact: contact_name (required), contact_normalized (required), start/end/hasTime/items/notes = null/false
 5. Ja VAIRĀKAS REMINDER (tikai ar vairākiem skaidriem laikiem): JSON: {type:"multiple", tasks:[{type:"reminder", description, notes, start, end, hasTime, items, lang}, ...]}
 
-TIPU ATŠĶIRŠANA (REMINDER vs CALENDAR):
+TIPU ATŠĶIRŠANA (REMINDER vs CALENDAR vs CALL_CONTACT):
+- CALL_CONTACT: Ja teksts satur "zvanīt", "piezvanīt", "zvani", "piezvani" + cilvēka vārds/uzvārds UN nav vārda "atgādini" priekšā
+  * Piemēri: "Piezvanīt Kristapam Močānam", "Zvanīt Jānim Bērziņam", "Piezvani mammai"
+  * SVARĪGI: "Atgādini man zvanīt" → REMINDER (ir "atgādini"), NE call_contact
+  * SVARĪGI: "Zvanīt Jānim apspriest budžetu" → CALL_CONTACT (nav "atgādini")
 - REMINDER: Ja teksts sākas ar "atgādini", "atgādināt", "atgādinājums" vai līdzīgiem vārdiem
 - CALENDAR: Ja teksts satur "tikšanās", "sapulce", "notikums", "pasākums" UN nav vārda "atgādini" priekšā
 - CALENDAR: Ja teksts satur laiku un datumu, bet nav skaidrs "atgādini" konteksts → calendar
-- REMINDER: Ja teksts ir īss uzdevums bez konkrēta notikuma (piem., "zvanīt", "pierakstīt", "atcerēties")
+- REMINDER: Ja teksts ir īss uzdevums bez konkrēta notikuma (piem., "pierakstīt", "atcerēties") - BET NE "zvanīt" (tas ir call_contact)
 - CALENDAR: Ja teksts satur vietu (piem., "Rīgā", "kafejnīcā", "ofisā") un laiku → calendar
 - REMINDER: Ja teksts ir "pieraksti", "piezīme", "ideja", "note" → reminder (inbox reminder)
 
 NOTES FIELD LOĢIKA:
-- "notes" lauks ir pieejams reminder UN calendar tipiem - shopping tipam vienmēr notes = null
+- "notes" lauks ir pieejams reminder UN calendar tipiem - shopping UN call_contact tipam vienmēr notes = null
 - Reminder tipam: "notes" ir papildu konteksts/garāks teksts, kas neietilpst īsajā "description"
 - Calendar tipam: "notes" ir papildu informācija par notikumu (piem., "ar komandu", "jāņem dokumenti", "Zoom link")
 - Reminder tipam: Ja teksts ir garāks (>10 vārdi) → description = īss summary, notes = full text vai papildu detaļas
@@ -615,6 +622,16 @@ RELATĪVĀ LAIKA PARSĒŠANA (REMINDER):
 
 CALENDAR: Vienmēr pievieno end (+1h no start). Ja nav laika→hasTime=false, bet default 14:00.
 
+CALL_CONTACT TIPS:
+- Ja teksts satur "zvanīt", "piezvanīt", "zvani", "piezvani" + cilvēka vārds/uzvārds → type="call_contact"
+- contact_name: izvilkt pilno kontakta nosaukumu no teksta (kā tas ir teikumā)
+- contact_normalized: normalizēt uz nominatīvu (noņemt datīva/ģenitīva galotnes)
+  * "Kristapam" → "Kristaps", "Jānim" → "Jānis", "mammai" → "mamma", "Močānam" → "Močāns"
+  * Ja nav skaidra galotnes, atstāt kā ir (piem., "mamma" → "mamma")
+- description: saglabāt oriģinālo frāzi vai īsu versiju (piem., "Zvanīt Kristapam Močānam")
+- start, end, hasTime, items: vienmēr null/false (call_contact nav laika/datuma)
+- notes: null (call_contact nav papildu piezīmju)
+
 SVARĪGI - TIPU ATŠĶIRŠANA:
 - "Tikšanās ar Jāni rīt plkst 10" → CALENDAR (nav "atgādini")
 - "Atgādini man tikšanās ar Jāni rīt plkst 10" → REMINDER (ir "atgādini")
@@ -634,7 +651,7 @@ Input: "Pieraksti ideja dark mode"
 {"type":"reminder","description":"Ideja","notes":"dark mode","start":null,"end":null,"hasTime":false,"items":null,"lang":"lv","corrected_input":null}
 
 Input: "Zvanīt Jānim apspriest budžetu"
-{"type":"reminder","description":"Zvanīt Jānim","notes":"Apspriest budžetu","start":null,"end":null,"hasTime":false,"items":null,"lang":"lv","corrected_input":null}
+{"type":"call_contact","description":"Zvanīt Jānim","notes":null,"start":null,"end":null,"hasTime":false,"items":null,"contact_name":"Jānis","contact_normalized":"Jānis","lang":"lv","corrected_input":null}
 
 Input: "Atgādini man rīt 9 zvanīt klientam Jānim un apspriest budžetu"
 {"type":"reminder","description":"Zvanīt klientam Jānim","notes":"Apspriest budžetu","start":"${tomorrowDate}T09:00:00+02:00","end":null,"hasTime":true,"items":null,"lang":"lv","corrected_input":null}
@@ -653,6 +670,20 @@ Input: "9 no rīt atgādini"
 
 Input: "pievieno piens, maize, olas"
 {"type":"shopping","description":"Pirkumi","notes":null,"start":null,"end":null,"hasTime":false,"items":"piens, maize, olas","lang":"lv","corrected_input":null}
+
+CALL_CONTACT PIEMĒRI:
+
+Input: "Piezvanīt Kristapam Močānam"
+{"type":"call_contact","description":"Piezvanīt Kristapam Močānam","notes":null,"start":null,"end":null,"hasTime":false,"items":null,"contact_name":"Kristaps Močāns","contact_normalized":"Kristaps Močāns","lang":"lv","corrected_input":null}
+
+Input: "Zvanīt Jānim Bērziņam"
+{"type":"call_contact","description":"Zvanīt Jānim Bērziņam","notes":null,"start":null,"end":null,"hasTime":false,"items":null,"contact_name":"Jānis Bērziņš","contact_normalized":"Jānis Bērziņš","lang":"lv","corrected_input":null}
+
+Input: "Piezvani mammai"
+{"type":"call_contact","description":"Piezvani mammai","notes":null,"start":null,"end":null,"hasTime":false,"items":null,"contact_name":"mamma","contact_normalized":"mamma","lang":"lv","corrected_input":null}
+
+Input: "Piezvanīt klientam Jānim"
+{"type":"call_contact","description":"Piezvanīt klientam Jānim","notes":null,"start":null,"end":null,"hasTime":false,"items":null,"contact_name":"Jānis","contact_normalized":"Jānis","lang":"lv","corrected_input":null}
 
 VAIRĀKU REMINDER PIEMĒRI (TIKAI REMINDER - TIKAI ar vairākiem skaidriem laikiem):
 
@@ -1387,7 +1418,7 @@ const EVENT_SCHEMA = {
     properties: {
       type: {
         type: "string",
-        enum: ["reminder", "calendar", "shopping"]
+        enum: ["reminder", "calendar", "shopping", "call_contact"]
       },
       lang: {
         type: "string",
@@ -1419,6 +1450,14 @@ const EVENT_SCHEMA = {
         type: "string",
         minLength: 1,
         description: "For shopping type"
+      },
+      contact_name: {
+        type: "string",
+        description: "For call_contact type - extracted contact name"
+      },
+      contact_normalized: {
+        type: "string",
+        description: "For call_contact type - normalized contact name (nominative case)"
       }
     },
     required: ["type", "lang", "description"], // Minimal required fields
@@ -1437,6 +1476,9 @@ function isValidCalendarJson(obj) {
   }
   if (obj.type === "shopping") {
     return !!(obj.items && obj.lang);
+  }
+  if (obj.type === "call_contact") {
+    return !!(obj.contact_name && obj.lang);
   }
   if (obj.type === "reminders") {
     // Multi-reminder atbalsts
