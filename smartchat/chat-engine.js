@@ -250,18 +250,27 @@ export async function processToolResult(session, toolCallId, success, result, er
     
     console.log(`[SmartChat ${session.id}] Processing tool result for ${toolCallId}, messages: ${messages.length}`);
     
-    // Get GPT response based on tool result
+    // Get GPT response based on tool result - WITH TOOLS enabled so GPT can continue to next task
     const response = await openai.chat.completions.create({
       model: CHAT_MODEL,
       messages,
+      tools: SMARTCHAT_TOOLS,  // Allow GPT to call more tools if needed
+      tool_choice: "auto",
       max_tokens: MAX_TOKENS,
       temperature: TEMPERATURE
     });
     
-    const assistantMessage = response.choices[0].message.content || "";
-    addMessage(session.id, 'assistant', assistantMessage);
-    
+    const choice = response.choices[0];
     const processingTime = Date.now() - startTime;
+    
+    // Check if GPT wants to make another tool call (e.g., for multiple tasks)
+    if (choice.message.tool_calls && choice.message.tool_calls.length > 0) {
+      console.log(`[SmartChat ${session.id}] GPT wants to continue with another tool call`);
+      return await handleToolCalls(session, choice.message.tool_calls);
+    }
+    
+    const assistantMessage = choice.message.content || "";
+    addMessage(session.id, 'assistant', assistantMessage);
     
     return {
       type: "text",
