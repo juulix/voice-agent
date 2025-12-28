@@ -6,14 +6,19 @@
 /**
  * Format events for context
  * @param {Array} events - Array of events
+ * @param {string} timezone - User's timezone (e.g., 'Europe/Riga')
  * @returns {string} Formatted string
  */
-function formatEvents(events) {
+function formatEvents(events, timezone = 'Europe/Riga') {
   if (!events || events.length === 0) return "Nav notikumu.";
   
   return events.map(e => {
     const start = new Date(e.start || e.startDate);
-    const time = start.toLocaleTimeString('lv-LV', { hour: '2-digit', minute: '2-digit' });
+    const time = start.toLocaleTimeString('lv-LV', { 
+      hour: '2-digit', 
+      minute: '2-digit',
+      timeZone: timezone 
+    });
     const calendar = e.calendar ? ` [${e.calendar}]` : '';
     return `- ${e.title} (${time})${calendar}`;
   }).join('\n');
@@ -22,14 +27,25 @@ function formatEvents(events) {
 /**
  * Format reminders for context
  * @param {Array} reminders - Array of reminders
+ * @param {string} timezone - User's timezone (e.g., 'Europe/Riga')
  * @returns {string} Formatted string
  */
-function formatReminders(reminders) {
+function formatReminders(reminders, timezone = 'Europe/Riga') {
   if (!reminders || reminders.length === 0) return "Nav atgādinājumu.";
   
   return reminders.map(r => {
     const status = r.isCompleted ? '✓' : '○';
-    const due = r.dueDate ? ` (termiņš: ${new Date(r.dueDate).toLocaleDateString('lv-LV')})` : '';
+    let due = '';
+    if (r.dueDate) {
+      const dueDate = new Date(r.dueDate);
+      const dateStr = dueDate.toLocaleDateString('lv-LV', { timeZone: timezone });
+      const timeStr = dueDate.toLocaleTimeString('lv-LV', { 
+        hour: '2-digit', 
+        minute: '2-digit',
+        timeZone: timezone 
+      });
+      due = ` (termiņš: ${dateStr} ${timeStr})`;
+    }
     const list = r.list ? ` [${r.list}]` : '';
     return `${status} ${r.title}${due}${list}`;
   }).join('\n');
@@ -43,11 +59,12 @@ function formatReminders(reminders) {
  */
 export function getSystemPrompt(context, language = 'lv') {
   const { currentDate, currentTime, timezone } = context;
+  const tz = timezone || 'Europe/Riga';
   
-  // Build context summary
-  const todayEventsStr = formatEvents(context.todayEvents);
-  const tomorrowEventsStr = formatEvents(context.tomorrowEvents);
-  const remindersStr = formatReminders(context.reminders);
+  // Build context summary with correct timezone
+  const todayEventsStr = formatEvents(context.todayEvents, tz);
+  const tomorrowEventsStr = formatEvents(context.tomorrowEvents, tz);
+  const remindersStr = formatReminders(context.reminders, tz);
   
   if (language === 'lv') {
     return `Tu esi SmartChat - gudrs balss asistents, kas palīdz pārvaldīt kalendāru un atgādinājumus.
