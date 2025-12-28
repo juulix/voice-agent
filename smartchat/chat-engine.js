@@ -146,6 +146,19 @@ async function handleToolCalls(session, toolCalls) {
     };
   }
   
+  // IMPORTANT: Save the assistant message with tool_calls for GPT context
+  // This is needed so GPT can process the tool result correctly
+  addMessage(session.id, 'assistant', '', { 
+    toolCalls: [{
+      id: toolCall.id,
+      type: 'function',
+      function: {
+        name: toolName,
+        arguments: JSON.stringify(params)
+      }
+    }]
+  });
+  
   // Check if confirmation is required
   if (requiresConfirmation(toolName)) {
     const confirmationMessage = getConfirmationMessage(toolName, params, session.language);
@@ -201,17 +214,33 @@ export async function processToolResult(session, toolCallId, success, result, er
     
     addMessage(session.id, 'tool', toolResultContent, { toolCallId });
     
-    // Build messages with tool result
+    // Build messages with tool result - properly format for GPT
     const systemPrompt = getSystemPrompt(session.context, session.language);
-    const messages = [
-      { role: "system", content: systemPrompt },
-      ...session.messages.slice(-20).map(m => {
-        if (m.role === 'tool') {
-          return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
-        }
-        return { role: m.role, content: m.content };
-      })
-    ];
+    const messages = [{ role: "system", content: systemPrompt }];
+    
+    // Process session messages with proper tool call formatting
+    for (const m of session.messages.slice(-20)) {
+      if (m.role === 'tool') {
+        // Tool result message
+        messages.push({ 
+          role: "tool", 
+          tool_call_id: m.toolCallId, 
+          content: m.content 
+        });
+      } else if (m.role === 'assistant' && m.toolCalls) {
+        // Assistant message with tool calls
+        messages.push({
+          role: "assistant",
+          content: m.content || null,
+          tool_calls: m.toolCalls
+        });
+      } else if (m.role === 'user' || m.role === 'assistant') {
+        // Regular user or assistant message
+        messages.push({ role: m.role, content: m.content });
+      }
+    }
+    
+    console.log(`[SmartChat ${session.id}] Processing tool result for ${toolCallId}, messages: ${messages.length}`);
     
     // Get GPT response based on tool result
     const response = await openai.chat.completions.create({
@@ -236,6 +265,7 @@ export async function processToolResult(session, toolCallId, success, result, er
     
   } catch (err) {
     console.error(`[SmartChat ${session.id}] Error processing tool result:`, err.message);
+    console.error(`[SmartChat ${session.id}] Full error:`, err);
     
     const errorMessage = session.language === 'lv'
       ? "Atvainojiet, radās kļūda apstrādājot rezultātu."
