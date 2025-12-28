@@ -143,7 +143,7 @@ export const SMARTCHAT_TOOLS = [
     type: "function",
     function: {
       name: "reschedule_event",
-      description: "Reschedule a calendar event to a new time. REQUIRES CONFIRMATION before execution.",
+      description: "Reschedule a calendar event to a new time. Use when user wants to move an event.",
       parameters: {
         type: "object",
         properties: {
@@ -369,11 +369,11 @@ export const SMARTCHAT_TOOLS = [
 
 /**
  * Tools that require user confirmation before execution
+ * Note: reschedule_event removed - GPT naturally asks for confirmation in conversation
  */
 export const CONFIRMATION_REQUIRED_TOOLS = [
   "delete_event",
-  "delete_reminder",
-  "reschedule_event"
+  "delete_reminder"
 ];
 
 /**
