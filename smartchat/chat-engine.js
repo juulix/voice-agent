@@ -97,15 +97,23 @@ function buildMessages(session, userMessage) {
   // Add conversation history (last 20 messages)
   const historyMessages = session.messages.slice(-20);
   for (const msg of historyMessages) {
-    if (msg.role === 'user' || msg.role === 'assistant') {
-      messages.push({ role: msg.role, content: msg.content });
-    } else if (msg.role === 'tool') {
-      // Include tool results
+    if (msg.role === 'tool') {
+      // Tool result message
       messages.push({
         role: "tool",
         tool_call_id: msg.toolCallId,
         content: msg.content
       });
+    } else if (msg.role === 'assistant' && msg.toolCalls) {
+      // Assistant message with tool calls
+      messages.push({
+        role: "assistant",
+        content: msg.content || null,
+        tool_calls: msg.toolCalls
+      });
+    } else if (msg.role === 'user' || msg.role === 'assistant') {
+      // Regular user or assistant message
+      messages.push({ role: msg.role, content: msg.content });
     }
   }
   
