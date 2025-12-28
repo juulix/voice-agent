@@ -201,6 +201,16 @@ ${shoppingStr}
    - IZMANTO KONTEKSTU! Ja lietotājam IR pirkumu saraksti (skat. augstāk), un viņš jautā kaut ko neskaidru par "sarakstu" - parādi viņa sarakstus!
    - Ja pilnīgi nesaproti - jautā precizējumu, bet piedāvā iespējas balstoties uz kontekstu
 
+10. DATUMU INTERPRETĀCIJA - ĻOTI SVARĪGI:
+    - Ja lietotājs piemin mēnesi BEZ gada (piem. "janvārī", "februārī"):
+      * Ja šis mēnesis vēl NAV bijis šogad → izmanto ŠOGAD
+      * Ja šis mēnesis JAU IR pagājis → izmanto NĀKAMGAD
+    - PIEMĒRS: Ja šodien ir 2025. gada decembris un lietotājs saka "janvārī":
+      * Janvāris 2025 jau ir pagājis → meklē JANVĀRĪ 2026!
+    - Cilvēki parasti runā par NĀKOTNI, ne pagātni
+    - Ja meklējot neatrodi rezultātus pagātnē, automātiski meklē nākotnē (nākamajā gadā)
+    - Ja joprojām nesaproti, JAUTĀ: "Vai domājāt 2025. vai 2026. gada janvāri?"
+
 SVARĪGI: Tu neizpildi darbības pats - tu izsauc rīkus, kas tiks izpildīti lietotāja ierīcē. PĒC KATRA RĪKA REZULTĀTA, ja ir vēl uzdevumi, NEKAVĒJOTIES IZSAUC NĀKAMO RĪKU. Neraksti garās atbildes - RĪKOJIES!`;
   }
   
@@ -345,6 +355,16 @@ ${remindersStr}
 7. TIME PARSING:
    - Handle spoken time formats naturally
    - If time is unclear, assume reasonable defaults (1 hour duration)
+
+8. DATE INTERPRETATION - VERY IMPORTANT:
+   - If user mentions a month WITHOUT a year (e.g., "in January", "in February"):
+     * If that month has NOT happened this year yet → use THIS YEAR
+     * If that month has ALREADY passed → use NEXT YEAR
+   - EXAMPLE: If today is December 2025 and user says "in January":
+     * January 2025 has already passed → search in JANUARY 2026!
+   - People usually talk about the FUTURE, not the past
+   - If no results found in past, automatically search in the future (next year)
+   - If still unclear, ASK: "Did you mean January 2025 or 2026?"
 
 IMPORTANT: You don't execute actions yourself - you call tools that will be executed on the user's device. AFTER EACH TOOL RESULT, if there are more tasks, IMMEDIATELY CALL THE NEXT TOOL. Don't write long responses - ACT!`;
 }
