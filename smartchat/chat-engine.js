@@ -6,7 +6,7 @@
 import OpenAI from "openai";
 import { SMARTCHAT_TOOLS, requiresConfirmation, isQueryTool } from "./tools.js";
 import { getSystemPrompt, getConfirmationMessage } from "./prompts.js";
-import { addMessage, addPendingToolCall } from "./session-manager.js";
+import { addMessage, addPendingToolCall, getSession } from "./session-manager.js";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -180,8 +180,12 @@ async function handleToolCalls(session, toolCalls) {
   
   // Duplicate detection for create operations
   if (toolName === 'create_event' || toolName === 'create_reminder') {
-    const createdItems = countCreatedItems(session.messages);
+    // Get fresh session to ensure we have latest messages
+    const freshSession = getSession(session.id) || session;
+    const createdItems = countCreatedItems(freshSession.messages);
     const newTitle = params.title?.toLowerCase().trim();
+    
+    console.log(`[SmartChat ${session.id}] Duplicate check for "${params.title}" - existing titles: [${createdItems.titles.join(', ')}]`);
     
     if (newTitle && createdItems.titles.some(t => t.toLowerCase().trim() === newTitle)) {
       console.log(`[SmartChat ${session.id}] DUPLICATE DETECTED: "${params.title}" already created, skipping`);
@@ -296,6 +300,7 @@ export async function processToolResult(session, toolCallId, success, result, er
       ? JSON.stringify(enhancedResult)
       : JSON.stringify({ error: error || "Execution failed" });
     
+    console.log(`[SmartChat ${session.id}] Storing tool result: ${toolResultContent.substring(0, 200)}...`);
     addMessage(session.id, 'tool', toolResultContent, { toolCallId });
     
     // Build messages with tool result - properly format for GPT
@@ -350,7 +355,9 @@ export async function processToolResult(session, toolCallId, success, result, er
     // Check if GPT wants to make another tool call (e.g., for multiple tasks)
     if (choice.message.tool_calls && choice.message.tool_calls.length > 0) {
       console.log(`[SmartChat ${session.id}] GPT wants to continue with another tool call`);
-      return await handleToolCalls(session, choice.message.tool_calls);
+      // Get fresh session to ensure we have latest messages for duplicate detection
+      const freshSession = getSession(session.id) || session;
+      return await handleToolCalls(freshSession, choice.message.tool_calls);
     }
     
     const assistantMessage = choice.message.content || "";
@@ -442,6 +449,7 @@ export async function processAudioMessage(session, audioBuffer, filename = "audi
 
 /**
  * Count created items in the conversation history
+ * Also extracts titles from tool call parameters (not just results)
  * @param {Array} messages - Session messages
  * @returns {object} Count of created events and reminders
  */
@@ -451,22 +459,58 @@ function countCreatedItems(messages) {
   const createdTitles = [];
   
   for (const msg of messages) {
+    // Check tool results for successful creations
     if (msg.role === 'tool' && msg.content) {
       try {
         const result = JSON.parse(msg.content);
+        // Check for eventId or reminderId (successful creation)
         if (result.eventId && result.title) {
           events++;
-          createdTitles.push(result.title);
+          if (!createdTitles.includes(result.title)) {
+            createdTitles.push(result.title);
+          }
+          console.log(`[countCreatedItems] Found created event: "${result.title}"`);
         } else if (result.reminderId && result.title) {
           reminders++;
+          if (!createdTitles.includes(result.title)) {
+            createdTitles.push(result.title);
+          }
+          console.log(`[countCreatedItems] Found created reminder: "${result.title}"`);
+        }
+        // Also check for success flag with title
+        if (result.success && result.title && !createdTitles.includes(result.title)) {
           createdTitles.push(result.title);
+          console.log(`[countCreatedItems] Found successful creation: "${result.title}"`);
         }
       } catch (e) {
         // Ignore parse errors
       }
     }
+    
+    // Also extract titles from assistant tool_calls that had tool responses
+    // This catches cases where the tool result doesn't include the title
+    if (msg.role === 'assistant' && msg.toolCalls) {
+      for (const tc of msg.toolCalls) {
+        if (tc.function?.name === 'create_event' || tc.function?.name === 'create_reminder') {
+          try {
+            const params = JSON.parse(tc.function.arguments);
+            // Only count if we have a corresponding tool response
+            const hasResponse = messages.some(m => 
+              m.role === 'tool' && m.toolCallId === tc.id
+            );
+            if (hasResponse && params.title && !createdTitles.includes(params.title)) {
+              createdTitles.push(params.title);
+              console.log(`[countCreatedItems] Found title from tool_call params: "${params.title}"`);
+            }
+          } catch (e) {
+            // Ignore parse errors
+          }
+        }
+      }
+    }
   }
   
+  console.log(`[countCreatedItems] Total: ${events} events, ${reminders} reminders, titles: [${createdTitles.join(', ')}]`);
   return { events, reminders, titles: createdTitles };
 }
 
