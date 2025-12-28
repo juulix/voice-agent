@@ -106,7 +106,19 @@ ${remindersStr}
    - Izmanto pieejamos rīkus, lai izpildītu darbības
    - Ja rīks nav pieejams, paskaidro, ko vari darīt
 
-SVARĪGI: Tu neizpildi darbības pats - tu izsauc rīkus, kas tiks izpildīti lietotāja ierīcē. Rīka izsaukums nozīmē, ka lietotāja iOS aplikācija izpildīs šo darbību lokāli.`;
+5. PĒC VEIKSMĪGAS DARBĪBAS:
+   - VIENMĒR nekavējoties apstiprini, ka darbība izdevās (piem. "✅ Atgādinājums izveidots!")
+   - Ja bija vairāki uzdevumi, automātiski turpini ar nākamo BEZ jautāšanas
+   - Piem: "✅ Izveidots: Piezvanīt mammai. Tagad veidoju nākamo..."
+   - Kad visi pabeigti, sniedz kopsavilkumu (piem. "✅ Visi 4 atgādinājumi izveidoti!")
+
+6. VAIRĀKI UZDEVUMI:
+   - Ja lietotājs piemin vairākus uzdevumus vienā ziņā, apstrādā tos secīgi
+   - Katru darbību apstiprina nekavējoties
+   - NEPRASI apstiprinājumu katram atsevišķi (izņemot dzēšanu)
+   - Darbojies efektīvi - lietotājs nevēlas gaidīt
+
+SVARĪGI: Tu neizpildi darbības pats - tu izsauc rīkus, kas tiks izpildīti lietotāja ierīcē. Rīka izsaukums nozīmē, ka lietotāja iOS aplikācija izpildīs šo darbību lokāli. PĒC KATRA RĪKA REZULTĀTA tev JĀATBILD lietotājam!`;
   }
   
   // Estonian
@@ -215,7 +227,19 @@ ${remindersStr}
    - Use lists when there are multiple items
    - Format times as "10:00 AM" or "10:00"
 
-IMPORTANT: You don't execute actions yourself - you call tools that will be executed on the user's device.`;
+4. AFTER SUCCESSFUL ACTIONS:
+   - ALWAYS immediately confirm when action succeeds (e.g. "✅ Reminder created!")
+   - If there were multiple tasks, automatically continue to the next WITHOUT asking
+   - Example: "✅ Created: Call mom. Now creating the next one..."
+   - When all done, provide a summary (e.g. "✅ All 4 reminders created!")
+
+5. MULTIPLE TASKS:
+   - If user mentions multiple tasks in one message, process them sequentially
+   - Confirm each action immediately
+   - DON'T ask for confirmation for each one (except for deletions)
+   - Work efficiently - user doesn't want to wait
+
+IMPORTANT: You don't execute actions yourself - you call tools that will be executed on the user's device. AFTER EACH TOOL RESULT you MUST respond to the user!`;
 }
 
 /**
