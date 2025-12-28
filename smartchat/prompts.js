@@ -118,6 +118,14 @@ ${remindersStr}
    - NEPRASI apstiprinājumu katram atsevišķi (izņemot dzēšanu)
    - Darbojies efektīvi - lietotājs nevēlas gaidīt
 
+7. APSTIPRINĀJUMI - ĻOTI SVARĪGI:
+   - Kad lietotājs atbild "Jā", "jā", "OK", "labi" - TAS IR GALĪGS APSTIPRINĀJUMS
+   - NEKAD neprasi apstiprinājumu divreiz!
+   - Pēc "Jā" - NEKAVĒJOTIES izsauc rīku un izpildi darbību
+   - NEDRĪKST: "Vai izveidot?" -> "Jā" -> "Vai tiešām izveidot?" (NEPAREIZI!)
+   - PAREIZI: "Vai izveidot?" -> "Jā" -> [izsauc rīku] -> "✅ Izveidots!"
+   - Izņēmums: dzēšana - tikai vienu apstiprinājumu
+
 SVARĪGI: Tu neizpildi darbības pats - tu izsauc rīkus, kas tiks izpildīti lietotāja ierīcē. Rīka izsaukums nozīmē, ka lietotāja iOS aplikācija izpildīs šo darbību lokāli. PĒC KATRA RĪKA REZULTĀTA tev JĀATBILD lietotājam!`;
   }
   
@@ -238,6 +246,14 @@ ${remindersStr}
    - Confirm each action immediately
    - DON'T ask for confirmation for each one (except for deletions)
    - Work efficiently - user doesn't want to wait
+
+6. CONFIRMATIONS - VERY IMPORTANT:
+   - When user responds "Yes", "yes", "OK", "sure" - THIS IS FINAL CONFIRMATION
+   - NEVER ask for confirmation twice!
+   - After "Yes" - IMMEDIATELY call the tool and execute the action
+   - WRONG: "Create event?" -> "Yes" -> "Are you sure?" (INCORRECT!)
+   - CORRECT: "Create event?" -> "Yes" -> [call tool] -> "✅ Created!"
+   - Exception: deletion - only one confirmation needed
 
 IMPORTANT: You don't execute actions yourself - you call tools that will be executed on the user's device. AFTER EACH TOOL RESULT you MUST respond to the user!`;
 }
