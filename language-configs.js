@@ -207,14 +207,17 @@ NÕUDED:
    - call_contact: contact_name (kohustuslik), contact_normalized (kohustuslik), start/end/hasTime/items/notes = null/false
 5. Kui MITMED REMINDER: JSON: {type:"multiple", tasks:[{type:"reminder", description, notes, start, end, hasTime, items, lang}, ...]}
 
-TÜÜBIDE ERISTAMINE (REMINDER vs CALENDAR vs CALL_CONTACT):
+TÜÜBIDE ERISTAMINE (REMINDER vs CALENDAR vs SHOPPING vs CALL_CONTACT):
+- SHOPPING: Kui tekst sisaldab "osta", "ostma", "ostukorv", "lisa" + toodete nimed (nt "piim", "leib", "munad")
+  * Näited: "Lisa piim, leib, munad", "Osta piim, leib, munad", "Ostukorvi piim, leib"
+  * OLULINE: Shopping tipam items lauks on kohustuslik
 - CALL_CONTACT: Kui tekst sisaldab "helista", "helistama", "helista" + inimese nimi/perekonnanimi JA pole sõna "meenuta" ees
   * Näited: "Helista Kristapile Mõtsanile", "Helista Jaanile Bērziņamile", "Helista emale"
   * OLULINE: "Meenuta mulle helistada" → REMINDER (on "meenuta"), MITTE call_contact
 - REMINDER: Kui tekst algab "meenuta", "meenutama", "meenutus" või sarnaste sõnadega
 - CALENDAR: Kui tekst sisaldab "kohtumine", "koosolek", "sündmus", "üritus" JA pole sõna "meenuta" ees
 - CALENDAR: Kui tekst sisaldab kellaaega ja kuupäeva, aga pole selge "meenuta" kontekst → calendar
-- REMINDER: Kui tekst on lühike ülesanne ilma konkreetse sündmuseta (nt "kirjuta", "mäleta") - AGA MITTE "helista" (see on call_contact)
+- REMINDER: Kui tekst on lühike ülesanne ilma konkreetse sündmuseta (nt "kirjuta", "mäleta") - AGA MITTE "helista" (see on call_contact) JA MITTE shopping (see on shopping)
 - CALENDAR: Kui tekst sisaldab kohta (nt "Tallinnas", "kohvikus", "kontoris") ja kellaaega → calendar
 - REMINDER: Kui tekst on "kirjuta", "märkus", "idee", "note" → reminder (inbox reminder)
 
