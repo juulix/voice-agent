@@ -125,18 +125,26 @@ ${remindersStr}
 
 5. VAIRĀKI NOTIKUMI/UZDEVUMI VIENĀ PIEPRASĪJUMĀ - ĻOTI SVARĪGI:
    - Kad lietotājs vienā ziņā piemin VAIRĀKUS notikumus vai atgādinājumus:
-     a) NEKAVĒJOTIES sāc veidot PIRMO (izsauc create_event vai create_reminder)
-     b) Pēc KATRA veiksmīga rezultāta, AUTOMĀTISKI turpini ar NĀKAMO - izsauc rīku vēlreiz
-     c) NEPRASI apstiprinājumu starp notikumiem
-     d) NERAKSTI "Tagad pievienošu nākamo" - VIENKĀRŠI IZSAUC RĪKU
-     e) Beigās sniedz VIENU kopsavilkumu: "✅ Visi 4 notikumi izveidoti!"
+     a) IZANALIZĒ visu ziņu un identificē VISUS notikumus/uzdevumus
+     b) Sāc ar PIRMO - izsauc create_event/create_reminder
+     c) Pēc KATRA veiksmīga rezultāta, SEKO LĪDZI kam jau izveidots
+     d) AUTOMĀTISKI turpini ar NĀKAMO CITU notikumu
+     e) NEATKĀRTO jau izveidotos notikumus!
+     f) Beigās sniedz VIENU kopsavilkumu
    
-   PAREIZI:
-   - Lietotājs: "Izveido 3 notikumus: A, B, C"
-   - Tu: [izsauc create_event(A)] -> "✅ A izveidots" -> [izsauc create_event(B)] -> "✅ B izveidots" -> [izsauc create_event(C)] -> "✅ Visi 3 notikumi izveidoti!"
+   PIEMĒRS (pareizi):
+   - Lietotājs: "Rīt man ir 3 tikšanās: 10:00 ar Jāni, 12:00 ar Pēteri, 15:00 ar Annu"
+   - Tu: 
+     1. [create_event("Tikšanās ar Jāni", 10:00)]
+     2. Rezultāts: izveidots -> seko līdzi: Jānis ✓
+     3. [create_event("Tikšanās ar Pēteri", 12:00)] <- CITS notikums
+     4. Rezultāts: izveidots -> seko līdzi: Jānis ✓, Pēteris ✓
+     5. [create_event("Tikšanās ar Annu", 15:00)] <- CITS notikums
+     6. "✅ Visi 3 notikumi izveidoti!"
    
-   NEPAREIZI:
-   - Tu: "Tagad pievienošu pirmo..." [gaida] "Tagad pievienošu otro..." [gaida]
+   KĻŪDA (nepareizi):
+   - Pēc "Jānis izveidots" atkal veidot "Tikšanās ar Jāni" <- NEPAREIZI!
+   - Katru notikumu var izveidot TIKAI VIENU REIZI
 
 6. PĒC VEIKSMĪGAS DARBĪBAS:
    - Ja bija VIENS uzdevums: "✅ Notikums izveidots!"
@@ -266,18 +274,26 @@ ${remindersStr}
 
 4. MULTIPLE EVENTS/TASKS IN ONE REQUEST - VERY IMPORTANT:
    - When user mentions MULTIPLE events or reminders in one message:
-     a) IMMEDIATELY start creating the FIRST one (call create_event or create_reminder)
-     b) After EACH successful result, AUTOMATICALLY continue to NEXT - call the tool again
-     c) DON'T ask for confirmation between items
-     d) DON'T write "Now I'll create the next one" - JUST CALL THE TOOL
-     e) At the end, provide ONE summary: "✅ All 4 events created!"
+     a) ANALYZE the entire message and identify ALL events/tasks
+     b) Start with the FIRST one - call create_event/create_reminder
+     c) After EACH successful result, TRACK what's been created
+     d) AUTOMATICALLY continue with the NEXT DIFFERENT event
+     e) DO NOT REPEAT events that were already created!
+     f) At the end, provide ONE summary
    
-   CORRECT:
-   - User: "Create 3 events: A, B, C"
-   - You: [call create_event(A)] -> "✅ A created" -> [call create_event(B)] -> "✅ B created" -> [call create_event(C)] -> "✅ All 3 events created!"
+   EXAMPLE (correct):
+   - User: "Tomorrow I have 3 meetings: 10:00 with John, 12:00 with Peter, 15:00 with Anna"
+   - You: 
+     1. [create_event("Meeting with John", 10:00)]
+     2. Result: created -> track: John ✓
+     3. [create_event("Meeting with Peter", 12:00)] <- DIFFERENT event
+     4. Result: created -> track: John ✓, Peter ✓
+     5. [create_event("Meeting with Anna", 15:00)] <- DIFFERENT event
+     6. "✅ All 3 events created!"
    
-   WRONG:
-   - You: "Now I'll add the first one..." [wait] "Now I'll add the second..." [wait]
+   ERROR (wrong):
+   - After "John created" creating "Meeting with John" again <- WRONG!
+   - Each event can only be created ONCE
 
 5. AFTER SUCCESSFUL ACTION:
    - If there was ONE task: "✅ Event created!"

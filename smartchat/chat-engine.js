@@ -83,6 +83,7 @@ export async function processMessage(session, userMessage) {
 
 /**
  * Build messages array for GPT
+ * Ensures all tool_calls have corresponding tool responses
  * @param {object} session - Chat session
  * @param {string} userMessage - Current user message
  * @returns {Array} Messages array
@@ -94,8 +95,9 @@ function buildMessages(session, userMessage) {
     { role: "system", content: systemPrompt }
   ];
   
-  // Add conversation history (last 20 messages)
-  const historyMessages = session.messages.slice(-20);
+  // Sanitize history: ensure all tool_calls have responses
+  const historyMessages = sanitizeToolCallHistory(session.messages.slice(-20));
+  
   for (const msg of historyMessages) {
     if (msg.role === 'tool') {
       // Tool result message
@@ -121,6 +123,41 @@ function buildMessages(session, userMessage) {
 }
 
 /**
+ * Sanitize message history to ensure all tool_calls have corresponding tool responses
+ * This prevents the "tool_call_ids did not have response messages" error
+ * @param {Array} messages - Array of messages
+ * @returns {Array} Sanitized messages
+ */
+function sanitizeToolCallHistory(messages) {
+  // First pass: collect all tool_call_ids that have responses
+  const respondedToolCallIds = new Set();
+  for (const msg of messages) {
+    if (msg.role === 'tool' && msg.toolCallId) {
+      respondedToolCallIds.add(msg.toolCallId);
+    }
+  }
+  
+  // Second pass: filter out assistant messages with unresponded tool_calls
+  const sanitized = [];
+  for (const msg of messages) {
+    if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
+      // Check if ALL tool_calls have responses
+      const allResponded = msg.toolCalls.every(tc => respondedToolCallIds.has(tc.id));
+      if (allResponded) {
+        sanitized.push(msg);
+      } else {
+        // Skip this message - it has orphaned tool_calls
+        console.log(`[SmartChat] Removing orphaned tool_calls: ${msg.toolCalls.map(tc => tc.id).join(', ')}`);
+      }
+    } else {
+      sanitized.push(msg);
+    }
+  }
+  
+  return sanitized;
+}
+
+/**
  * Handle tool calls from GPT
  * @param {object} session - Chat session
  * @param {Array} toolCalls - Array of tool calls
@@ -140,6 +177,30 @@ async function handleToolCalls(session, toolCalls) {
   }
   
   console.log(`[SmartChat ${session.id}] Tool call: ${toolName}`, params);
+  
+  // Duplicate detection for create operations
+  if (toolName === 'create_event' || toolName === 'create_reminder') {
+    const createdItems = countCreatedItems(session.messages);
+    const newTitle = params.title?.toLowerCase().trim();
+    
+    if (newTitle && createdItems.titles.some(t => t.toLowerCase().trim() === newTitle)) {
+      console.log(`[SmartChat ${session.id}] DUPLICATE DETECTED: "${params.title}" already created, skipping`);
+      
+      // Return a synthetic "already created" response
+      const message = session.language === 'lv'
+        ? `"${params.title}" jau ir izveidots. Vai ir vēl citi notikumi/uzdevumi?`
+        : `"${params.title}" was already created. Are there any other events/tasks?`;
+      
+      addMessage(session.id, 'assistant', message);
+      
+      return {
+        type: "text",
+        message,
+        sessionId: session.id,
+        duplicateSkipped: true
+      };
+    }
+  }
   
   // Handle ask_clarification specially - return as text
   if (toolName === 'ask_clarification') {
@@ -215,9 +276,24 @@ export async function processToolResult(session, toolCallId, success, result, er
   const startTime = Date.now();
   
   try {
+    // Enhance tool result with context about what was created
+    let enhancedResult = result;
+    if (success && result) {
+      // Add information about previously created items to help GPT track progress
+      const createdItems = countCreatedItems(session.messages);
+      enhancedResult = {
+        ...result,
+        _meta: {
+          totalEventsCreatedBefore: createdItems.events,
+          totalRemindersCreatedBefore: createdItems.reminders,
+          previouslyCreatedTitles: createdItems.titles.slice(-5) // Last 5 titles
+        }
+      };
+    }
+    
     // Add tool result to history
     const toolResultContent = success 
-      ? JSON.stringify(result)
+      ? JSON.stringify(enhancedResult)
       : JSON.stringify({ error: error || "Execution failed" });
     
     addMessage(session.id, 'tool', toolResultContent, { toolCallId });
@@ -226,8 +302,9 @@ export async function processToolResult(session, toolCallId, success, result, er
     const systemPrompt = getSystemPrompt(session.context, session.language);
     const messages = [{ role: "system", content: systemPrompt }];
     
-    // Process session messages with proper tool call formatting
-    for (const m of session.messages.slice(-20)) {
+    // Process session messages with proper tool call formatting - use sanitized history
+    const sanitizedHistory = sanitizeToolCallHistory(session.messages.slice(-20));
+    for (const m of sanitizedHistory) {
       if (m.role === 'tool') {
         // Tool result message
         messages.push({ 
@@ -246,6 +323,13 @@ export async function processToolResult(session, toolCallId, success, result, er
         // Regular user or assistant message
         messages.push({ role: m.role, content: m.content });
       }
+    }
+    
+    // Count how many events/reminders have been created in this conversation
+    // This helps GPT track progress
+    const createdItems = countCreatedItems(session.messages);
+    if (createdItems.events > 0 || createdItems.reminders > 0) {
+      console.log(`[SmartChat ${session.id}] Progress: ${createdItems.events} events, ${createdItems.reminders} reminders created so far`);
     }
     
     console.log(`[SmartChat ${session.id}] Processing tool result for ${toolCallId}, messages: ${messages.length}`);
@@ -354,6 +438,36 @@ export async function processAudioMessage(session, audioBuffer, filename = "audi
       sessionId: session.id
     };
   }
+}
+
+/**
+ * Count created items in the conversation history
+ * @param {Array} messages - Session messages
+ * @returns {object} Count of created events and reminders
+ */
+function countCreatedItems(messages) {
+  let events = 0;
+  let reminders = 0;
+  const createdTitles = [];
+  
+  for (const msg of messages) {
+    if (msg.role === 'tool' && msg.content) {
+      try {
+        const result = JSON.parse(msg.content);
+        if (result.eventId && result.title) {
+          events++;
+          createdTitles.push(result.title);
+        } else if (result.reminderId && result.title) {
+          reminders++;
+          createdTitles.push(result.title);
+        }
+      } catch (e) {
+        // Ignore parse errors
+      }
+    }
+  }
+  
+  return { events, reminders, titles: createdTitles };
 }
 
 export default {
