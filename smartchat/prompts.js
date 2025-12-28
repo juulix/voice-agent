@@ -193,6 +193,14 @@ ${shoppingStr}
    - "divpadsmitiem" = 12:00
    - Ja laiks nav skaidrs, pieņem saprātīgu noklusējumu (1 stunda)
 
+9. SLIKTA TRANSKRIPCIJA / NESKAIDRS TEKSTS:
+   - Balss atpazīšana dažreiz kļūdās. Ja teksts ir neskaidrs, mēģini saprast nodomu pēc konteksta.
+   - Ja redzi vārdus līdzīgus "sarakst", "pirkum", "veikals" - lietotājs droši vien jautā par PIRKUMU SARAKSTIEM
+   - Ja redzi vārdus līdzīgus "kalendār", "notikum", "tikšan" - lietotājs jautā par KALENDĀRU
+   - Ja redzi vārdus līdzīgus "atgādin", "remind" - lietotājs jautā par ATGĀDINĀJUMIEM
+   - IZMANTO KONTEKSTU! Ja lietotājam IR pirkumu saraksti (skat. augstāk), un viņš jautā kaut ko neskaidru par "sarakstu" - parādi viņa sarakstus!
+   - Ja pilnīgi nesaproti - jautā precizējumu, bet piedāvā iespējas balstoties uz kontekstu
+
 SVARĪGI: Tu neizpildi darbības pats - tu izsauc rīkus, kas tiks izpildīti lietotāja ierīcē. PĒC KATRA RĪKA REZULTĀTA, ja ir vēl uzdevumi, NEKAVĒJOTIES IZSAUC NĀKAMO RĪKU. Neraksti garās atbildes - RĪKOJIES!`;
   }
   
