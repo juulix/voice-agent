@@ -7,6 +7,7 @@ import sqlite3 from "sqlite3";
 import path from "path";
 import * as Sentry from "@sentry/node";
 import { LANGUAGE_CONFIGS } from "./language-configs.js";
+import smartchatRouter from "./smartchat/index.js";
 
 /* ===== ENV ===== */
 const PORT = process.env.PORT || 3000;
@@ -1360,6 +1361,11 @@ const userLimiter = rateLimit({
 });
 
 app.use('/ingest-audio', limiter, userLimiter);
+
+/* ===== SMARTCHAT API ===== */
+// SmartChat is a separate conversational AI module
+// It doesn't affect existing /ingest-audio flow
+app.use('/api/chat', smartchatRouter);
 
 /* ===== HEALTH ENDPOINTS ===== */
 app.get("/", (req, res) => res.json({ 
