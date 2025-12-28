@@ -45,6 +45,7 @@ export function createSession(userId, context, language = 'lv') {
       weekEvents: context.weekEvents || [],
       reminders: context.reminders || [],
       shoppingItems: context.shoppingItems || [],
+      shoppingLists: context.shoppingLists || [],
       timezone: context.timezone || 'Europe/Riga',
       currentDate: context.currentDate || new Date().toISOString().split('T')[0],
       currentTime: context.currentTime || new Date().toTimeString().split(' ')[0]
