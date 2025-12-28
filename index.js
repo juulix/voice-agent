@@ -1365,6 +1365,12 @@ app.use('/ingest-audio', limiter, userLimiter);
 /* ===== SMARTCHAT API ===== */
 // SmartChat is a separate conversational AI module
 // It doesn't affect existing /ingest-audio flow
+// Share quota functions with SmartChat router
+app.locals.db = db;
+app.locals.getUserUsage = getUserUsage;
+app.locals.updateUsage = updateUsage;
+app.locals.getPlanLimits = getPlanLimits;
+app.locals.GRACE_DAILY = GRACE_DAILY;
 app.use('/api/chat', smartchatRouter);
 
 /* ===== HEALTH ENDPOINTS ===== */

@@ -21,10 +21,12 @@ router.use((req, res, next) => {
 /**
  * POST /api/chat/session
  * Create a new chat session
+ * Counts as 1 usage credit (same as voice recording)
  */
 router.post("/session", async (req, res) => {
   try {
     const userId = req.header("X-User-Id") || "anon";
+    const planHdr = req.header("X-Plan") || "free";
     const language = (req.header("X-Lang") || "lv").toLowerCase();
     const { context } = req.body;
     
@@ -36,8 +38,46 @@ router.post("/session", async (req, res) => {
       });
     }
     
+    // Get quota functions from app.locals
+    const { getUserUsage, updateUsage, getPlanLimits } = req.app.locals;
+    
+    // Check quota before creating session
+    const { u, limits } = await getUserUsage(userId, planHdr);
+    
+    // Check daily limit
+    if (u.daily.used >= limits.dailyLimit) {
+      console.log(`[${req.smartchatRequestId}] Quota exceeded for user ${userId} (daily: ${u.daily.used}/${limits.dailyLimit})`);
+      return res.status(429).json({ 
+        error: "quota_exceeded", 
+        plan: limits.plan,
+        dailyUsed: u.daily.used,
+        dailyLimit: limits.dailyLimit,
+        requestId: req.smartchatRequestId 
+      });
+    }
+    
+    // Check monthly limit (for plans with monthly limits)
+    if (limits.monthlyLimit !== null && limits.monthlyLimit !== undefined) {
+      if (u.monthly.used >= limits.monthlyLimit) {
+        console.log(`[${req.smartchatRequestId}] Monthly quota exceeded for user ${userId} (monthly: ${u.monthly.used}/${limits.monthlyLimit})`);
+        return res.status(429).json({ 
+          error: "monthly_quota_exceeded", 
+          plan: limits.plan,
+          monthlyUsed: u.monthly.used,
+          monthlyLimit: limits.monthlyLimit,
+          requestId: req.smartchatRequestId 
+        });
+      }
+    }
+    
+    // Create session
     const session = createSession(userId, context, language);
     const greeting = getGreeting(language, session.context);
+    
+    // Increment usage (count SmartChat open as 1 credit)
+    u.daily.used += 1;
+    await updateUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
+    console.log(`[${req.smartchatRequestId}] SmartChat session counted as 1 credit. User ${userId} now at ${u.daily.used}/${limits.dailyLimit} daily`);
     
     console.log(`[${req.smartchatRequestId}] Created session ${session.id} for user ${userId}`);
     
@@ -45,6 +85,15 @@ router.post("/session", async (req, res) => {
       sessionId: session.id,
       expiresAt: new Date(session.expiresAt).toISOString(),
       greeting,
+      quota: {
+        plan: limits.plan,
+        dailyUsed: u.daily.used,
+        dailyLimit: limits.dailyLimit >= 999999 ? null : limits.dailyLimit,
+        dailyRemaining: limits.dailyLimit >= 999999 ? null : Math.max(0, limits.dailyLimit - u.daily.used),
+        monthlyUsed: limits.monthlyLimit ? u.monthly.used : null,
+        monthlyLimit: limits.monthlyLimit || null,
+        monthlyRemaining: limits.monthlyLimit ? Math.max(0, limits.monthlyLimit - u.monthly.used) : null
+      },
       requestId: req.smartchatRequestId
     });
     
