@@ -338,6 +338,159 @@ export const SMARTCHAT_TOOLS = [
     }
   },
 
+  // ===== SHOPPING LIST TOOLS =====
+  {
+    type: "function",
+    function: {
+      name: "query_shopping_lists",
+      description: "Get all shopping lists with their item counts. Use to see what lists exist.",
+      parameters: {
+        type: "object",
+        properties: {}
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "query_shopping_items",
+      description: "Get items from a specific shopping list.",
+      parameters: {
+        type: "object",
+        properties: {
+          listName: {
+            type: "string",
+            description: "Name of the shopping list (e.g., 'Rimi', 'Maxima')"
+          },
+          showCompleted: {
+            type: "boolean",
+            description: "Whether to include completed/purchased items (default: false)"
+          }
+        },
+        required: ["listName"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_shopping_item",
+      description: "Add one or more items to a shopping list.",
+      parameters: {
+        type: "object",
+        properties: {
+          listName: {
+            type: "string",
+            description: "Name of the shopping list"
+          },
+          items: {
+            type: "array",
+            items: { type: "string" },
+            description: "Array of item names to add"
+          }
+        },
+        required: ["listName", "items"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "check_shopping_item",
+      description: "Mark a shopping item as purchased/completed.",
+      parameters: {
+        type: "object",
+        properties: {
+          listName: {
+            type: "string",
+            description: "Name of the shopping list"
+          },
+          itemName: {
+            type: "string",
+            description: "Name of the item to mark as purchased"
+          }
+        },
+        required: ["listName", "itemName"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "uncheck_shopping_item",
+      description: "Mark a shopping item as not purchased (undo check).",
+      parameters: {
+        type: "object",
+        properties: {
+          listName: {
+            type: "string",
+            description: "Name of the shopping list"
+          },
+          itemName: {
+            type: "string",
+            description: "Name of the item to uncheck"
+          }
+        },
+        required: ["listName", "itemName"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_shopping_item",
+      description: "Remove an item from a shopping list.",
+      parameters: {
+        type: "object",
+        properties: {
+          listName: {
+            type: "string",
+            description: "Name of the shopping list"
+          },
+          itemName: {
+            type: "string",
+            description: "Name of the item to delete"
+          }
+        },
+        required: ["listName", "itemName"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "clear_completed_shopping",
+      description: "Remove all completed/purchased items from a shopping list.",
+      parameters: {
+        type: "object",
+        properties: {
+          listName: {
+            type: "string",
+            description: "Name of the shopping list to clear"
+          }
+        },
+        required: ["listName"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_shopping_list",
+      description: "Create a new shopping list.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description: "Name for the new shopping list (e.g., 'Rimi', 'Maxima')"
+          }
+        },
+        required: ["name"]
+      }
+    }
+  },
+
   // ===== CLARIFICATION TOOL =====
   {
     type: "function",
@@ -383,6 +536,8 @@ export const QUERY_ONLY_TOOLS = [
   "query_events",
   "query_reminders",
   "find_free_time",
+  "query_shopping_lists",
+  "query_shopping_items",
   "ask_clarification"
 ];
 

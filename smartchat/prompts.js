@@ -52,6 +52,22 @@ function formatReminders(reminders, timezone = 'Europe/Riga') {
 }
 
 /**
+ * Format shopping lists for context
+ * @param {Array} shoppingLists - Array of shopping lists
+ * @returns {string} Formatted string
+ */
+function formatShoppingLists(shoppingLists) {
+  if (!shoppingLists || shoppingLists.length === 0) return "Nav pirkumu sarakstu.";
+  
+  return shoppingLists.map(list => {
+    const totalCount = list.items?.length || 0;
+    const completedCount = list.items?.filter(i => i.isChecked || i.isCompleted)?.length || 0;
+    const remaining = totalCount - completedCount;
+    return `• ${list.name}: ${remaining} nenopirkti (kopā ${totalCount})`;
+  }).join('\n');
+}
+
+/**
  * Get the system prompt for SmartChat
  * @param {object} context - Session context
  * @param {string} language - Language code
@@ -65,9 +81,10 @@ export function getSystemPrompt(context, language = 'lv') {
   const todayEventsStr = formatEvents(context.todayEvents, tz);
   const tomorrowEventsStr = formatEvents(context.tomorrowEvents, tz);
   const remindersStr = formatReminders(context.reminders, tz);
+  const shoppingStr = formatShoppingLists(context.shoppingLists);
   
   if (language === 'lv') {
-    return `Tu esi SmartChat - gudrs balss asistents, kas palīdz pārvaldīt kalendāru un atgādinājumus.
+    return `Tu esi SmartChat - gudrs balss asistents, kas palīdz pārvaldīt kalendāru, atgādinājumus un pirkumu sarakstus.
 
 ŠODIENAS DATUMS: ${currentDate}
 PAŠREIZĒJAIS LAIKS: ${currentTime}
@@ -84,12 +101,16 @@ ${tomorrowEventsStr}
 AKTĪVIE ATGĀDINĀJUMI:
 ${remindersStr}
 
+PIRKUMU SARAKSTI:
+${shoppingStr}
+
 === TAVAS SPĒJAS ===
 
 1. JAUTĀJUMI UN ATBILDES:
    - Atbildi uz jautājumiem par kalendāru un atgādinājumiem
    - Meklē notikumus un atgādinājumus
    - Atrodi brīvo laiku
+   - Parādi pirkumu sarakstu saturu
 
 2. IZMAIŅAS:
    - Pārcel notikumus uz citu laiku (reschedule_event)
@@ -99,7 +120,16 @@ ${remindersStr}
    - Dzēs atgādinājumus (delete_reminder) - VIENMĒR jautā apstiprinājumu
    - Atzīmē atgādinājumus kā paveiktus (complete_reminder)
 
-3. PRECIZĒŠANA:
+3. PIRKUMU SARAKSTI:
+   - Parādi sarakstus (query_shopping_lists)
+   - Parādi produktus konkrētā sarakstā (query_shopping_items)
+   - Pievieno produktus (add_shopping_item)
+   - Atzīmē kā nopirktu (check_shopping_item)
+   - Izdzēs produktu (delete_shopping_item)
+   - Notīri nopirktos (clear_completed_shopping)
+   - Izveido jaunu sarakstu (create_shopping_list)
+
+4. PRECIZĒŠANA:
    - Ja nav skaidrs, kuru notikumu/atgādinājumu lietotājs domā, JAUTĀ precizējošu jautājumu
    - Ja ir vairāki atbilstoši rezultāti, parādi sarakstu un jautā izvēli
 
@@ -320,20 +350,22 @@ IMPORTANT: You don't execute actions yourself - you call tools that will be exec
 export function getGreeting(language, context) {
   const todayCount = context.todayEvents?.length || 0;
   const reminderCount = context.reminders?.filter(r => !r.isCompleted)?.length || 0;
+  const shoppingCount = context.shoppingLists?.length || 0;
   
   if (language === 'lv') {
     let greeting = "Sveiki! 👋 Es esmu SmartChat, jūsu personīgais asistents.";
     
-    if (todayCount > 0 || reminderCount > 0) {
+    if (todayCount > 0 || reminderCount > 0 || shoppingCount > 0) {
       greeting += `\n\nŠodien jums ir:`;
       if (todayCount > 0) greeting += `\n• ${todayCount} notikum${todayCount === 1 ? 's' : 'i'} kalendārā`;
       if (reminderCount > 0) greeting += `\n• ${reminderCount} aktīv${reminderCount === 1 ? 's' : 'i'} atgādinājum${reminderCount === 1 ? 's' : 'i'}`;
+      if (shoppingCount > 0) greeting += `\n• ${shoppingCount} pirkumu sarakst${shoppingCount === 1 ? 's' : 'i'}`;
     }
     
     greeting += "\n\n💡 Pamēģini jautāt:";
     greeting += "\n• \"Kādi man ir plāni rītdien?\"";
-    greeting += "\n• \"Izveido atgādinājumu piezvanīt mammai\"";
-    greeting += "\n• \"Pārcel tikšanos uz 15:00\"";
+    greeting += "\n• \"Kas ir Rimi sarakstā?\"";
+    greeting += "\n• \"Pievieno pienu pirkumu sarakstā\"";
     
     return greeting;
   }
