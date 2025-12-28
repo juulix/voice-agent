@@ -487,20 +487,32 @@ function countCreatedItems(messages) {
       }
     }
     
-    // Also extract titles from assistant tool_calls that had tool responses
+    // Also extract titles from assistant tool_calls that had SUCCESSFUL tool responses
     // This catches cases where the tool result doesn't include the title
     if (msg.role === 'assistant' && msg.toolCalls) {
       for (const tc of msg.toolCalls) {
         if (tc.function?.name === 'create_event' || tc.function?.name === 'create_reminder') {
           try {
             const params = JSON.parse(tc.function.arguments);
-            // Only count if we have a corresponding tool response
-            const hasResponse = messages.some(m => 
+            // Find the corresponding tool response
+            const toolResponse = messages.find(m => 
               m.role === 'tool' && m.toolCallId === tc.id
             );
-            if (hasResponse && params.title && !createdTitles.includes(params.title)) {
-              createdTitles.push(params.title);
-              console.log(`[countCreatedItems] Found title from tool_call params: "${params.title}"`);
+            // Only count if tool response exists AND was successful (has eventId/reminderId, no error)
+            if (toolResponse && params.title && !createdTitles.includes(params.title)) {
+              try {
+                const responseContent = JSON.parse(toolResponse.content);
+                // Check if this was a successful creation (has ID) or an error
+                const isSuccess = (responseContent.eventId || responseContent.reminderId) && !responseContent.error;
+                if (isSuccess) {
+                  createdTitles.push(params.title);
+                  console.log(`[countCreatedItems] Found title from successful tool_call: "${params.title}"`);
+                } else if (responseContent.error) {
+                  console.log(`[countCreatedItems] Skipping failed tool_call for: "${params.title}" (error: ${responseContent.error})`);
+                }
+              } catch (e) {
+                // Tool response wasn't valid JSON, skip
+              }
             }
           } catch (e) {
             // Ignore parse errors
