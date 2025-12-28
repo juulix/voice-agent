@@ -1368,7 +1368,7 @@ app.use('/ingest-audio', limiter, userLimiter);
 // Share quota functions with SmartChat router
 app.locals.db = db;
 app.locals.getUserUsage = getUserUsage;
-app.locals.updateUsage = updateUsage;
+app.locals.updateQuotaUsage = updateQuotaUsage;
 app.locals.getPlanLimits = getPlanLimits;
 app.locals.GRACE_DAILY = GRACE_DAILY;
 app.use('/api/chat', smartchatRouter);

@@ -39,7 +39,7 @@ router.post("/session", async (req, res) => {
     }
     
     // Get quota functions from app.locals
-    const { getUserUsage, updateUsage, getPlanLimits } = req.app.locals;
+    const { getUserUsage, updateQuotaUsage, getPlanLimits } = req.app.locals;
     
     // Check quota before creating session
     const { u, limits } = await getUserUsage(userId, planHdr);
@@ -76,7 +76,7 @@ router.post("/session", async (req, res) => {
     
     // Increment usage (count SmartChat open as 1 credit)
     u.daily.used += 1;
-    await updateUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed);
+    await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed, limits.monthlyLimit);
     console.log(`[${req.smartchatRequestId}] SmartChat session counted as 1 credit. User ${userId} now at ${u.daily.used}/${limits.dailyLimit} daily`);
     
     console.log(`[${req.smartchatRequestId}] Created session ${session.id} for user ${userId}`);
