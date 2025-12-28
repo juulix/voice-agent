@@ -294,7 +294,11 @@ export function getGreeting(language, context) {
       if (reminderCount > 0) greeting += `\n• ${reminderCount} aktīv${reminderCount === 1 ? 's' : 'i'} atgādinājum${reminderCount === 1 ? 's' : 'i'}`;
     }
     
-    greeting += "\n\nKā es varu palīdzēt?";
+    greeting += "\n\n💡 Pamēģini jautāt:";
+    greeting += "\n• \"Kādi man ir plāni rītdien?\"";
+    greeting += "\n• \"Izveido atgādinājumu piezvanīt mammai\"";
+    greeting += "\n• \"Pārcel tikšanos uz 15:00\"";
+    
     return greeting;
   }
   
@@ -307,7 +311,11 @@ export function getGreeting(language, context) {
       if (reminderCount > 0) greeting += `\n• ${reminderCount} active reminder${reminderCount === 1 ? '' : 's'}`;
     }
     
-    greeting += "\n\nHow can I help you?";
+    greeting += "\n\n💡 Try asking:";
+    greeting += "\n• \"What are my plans tomorrow?\"";
+    greeting += "\n• \"Create a reminder to call mom\"";
+    greeting += "\n• \"Reschedule meeting to 3 PM\"";
+    
     return greeting;
   }
   
@@ -320,7 +328,11 @@ export function getGreeting(language, context) {
     if (reminderCount > 0) greeting += `\n• ${reminderCount} active reminder${reminderCount === 1 ? '' : 's'}`;
   }
   
-  greeting += "\n\nHow can I help you?";
+  greeting += "\n\n💡 Try asking:";
+  greeting += "\n• \"What are my plans tomorrow?\"";
+  greeting += "\n• \"Create a reminder to call mom\"";
+  greeting += "\n• \"Reschedule meeting to 3 PM\"";
+  
   return greeting;
 }
 
