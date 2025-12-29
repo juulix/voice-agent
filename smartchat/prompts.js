@@ -370,66 +370,206 @@ IMPORTANT: You don't execute actions yourself - you call tools that will be exec
 }
 
 /**
- * Get greeting message
+ * Get greeting message - Daily Snapshot
+ * Priority: 1) Overdue reminders, 2) Nearest upcoming reminder, 3) Today's count, 4) Shopping lists with unchecked items
  * @param {string} language - Language code
  * @param {object} context - Session context
  * @returns {string} Greeting message
  */
 export function getGreeting(language, context) {
-  const todayCount = context.todayEvents?.length || 0;
-  const reminderCount = context.reminders?.filter(r => !r.isCompleted)?.length || 0;
-  const shoppingCount = context.shoppingLists?.length || 0;
+  const now = new Date();
+  const timezone = context.timezone || 'Europe/Riga';
   
+  // Process reminders
+  const activeReminders = (context.reminders || []).filter(r => !r.isCompleted);
+  
+  // Find overdue reminders
+  const overdueReminders = activeReminders.filter(r => {
+    if (!r.dueDate) return false;
+    return new Date(r.dueDate) < now;
+  });
+  
+  // Find upcoming reminders (with due date in the future)
+  const upcomingReminders = activeReminders
+    .filter(r => r.dueDate && new Date(r.dueDate) >= now)
+    .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+  
+  const nearestReminder = upcomingReminders[0];
+  
+  // Today's events count
+  const todayCount = context.todayEvents?.length || 0;
+  
+  // Shopping lists with unchecked items
+  const shoppingWithItems = (context.shoppingLists || []).filter(list => {
+    const unchecked = (list.items || []).filter(i => !i.isChecked && !i.isCompleted).length;
+    return unchecked > 0;
+  });
+  
+  // Build greeting based on language
   if (language === 'lv') {
-    let greeting = "Sveiki! 👋 Es esmu SmartChat, jūsu personīgais asistents.";
-    
-    if (todayCount > 0 || reminderCount > 0 || shoppingCount > 0) {
-      greeting += `\n\nŠodien jums ir:`;
-      if (todayCount > 0) greeting += `\n• ${todayCount} notikum${todayCount === 1 ? 's' : 'i'} kalendārā`;
-      if (reminderCount > 0) greeting += `\n• ${reminderCount} aktīv${reminderCount === 1 ? 's' : 'i'} atgādinājum${reminderCount === 1 ? 's' : 'i'}`;
-      if (shoppingCount > 0) greeting += `\n• ${shoppingCount} pirkumu sarakst${shoppingCount === 1 ? 's' : 'i'}`;
-    }
-    
-    greeting += "\n\n💡 Pamēģini jautāt:";
-    greeting += "\n• \"Kādi man ir plāni rītdien?\"";
-    greeting += "\n• \"Kas ir Rimi sarakstā?\"";
-    greeting += "\n• \"Pievieno pienu pirkumu sarakstā\"";
-    
-    return greeting;
+    return buildLatvianSnapshot(overdueReminders, nearestReminder, activeReminders.length, todayCount, shoppingWithItems, timezone);
   }
   
   if (language === 'et') {
-    let greeting = "Hello! 👋 I'm SmartChat, your personal assistant.";
-    
-    if (todayCount > 0 || reminderCount > 0) {
-      greeting += `\n\nToday you have:`;
-      if (todayCount > 0) greeting += `\n• ${todayCount} event${todayCount === 1 ? '' : 's'} in calendar`;
-      if (reminderCount > 0) greeting += `\n• ${reminderCount} active reminder${reminderCount === 1 ? '' : 's'}`;
+    return buildEnglishSnapshot(overdueReminders, nearestReminder, activeReminders.length, todayCount, shoppingWithItems, timezone);
+  }
+  
+  // Default: English
+  return buildEnglishSnapshot(overdueReminders, nearestReminder, activeReminders.length, todayCount, shoppingWithItems, timezone);
+}
+
+/**
+ * Build Latvian daily snapshot
+ */
+function buildLatvianSnapshot(overdueReminders, nearestReminder, totalReminders, todayEvents, shoppingWithItems, timezone) {
+  const lines = [];
+  
+  // 1. Overdue reminders (highest priority)
+  if (overdueReminders.length > 0) {
+    lines.push(`⚠️ Tev ir ${overdueReminders.length} nokavēt${overdueReminders.length === 1 ? 's' : 'i'} atgādinājum${overdueReminders.length === 1 ? 's' : 'i'}:`);
+    overdueReminders.slice(0, 3).forEach(r => {
+      lines.push(`   • ${r.title}`);
+    });
+    if (overdueReminders.length > 3) {
+      lines.push(`   ...un vēl ${overdueReminders.length - 3}`);
     }
-    
-    greeting += "\n\n💡 Try asking:";
-    greeting += "\n• \"What are my plans tomorrow?\"";
-    greeting += "\n• \"Create a reminder to call mom\"";
-    greeting += "\n• \"Reschedule meeting to 3 PM\"";
-    
-    return greeting;
+  }
+  
+  // 2. Nearest upcoming reminder
+  if (nearestReminder && nearestReminder.dueDate) {
+    const dueDate = new Date(nearestReminder.dueDate);
+    const timeStr = dueDate.toLocaleTimeString('lv-LV', { 
+      hour: '2-digit', 
+      minute: '2-digit',
+      timeZone: timezone 
+    });
+    const dateStr = formatRelativeDate(dueDate, timezone, 'lv');
+    lines.push(`⏰ Tuvākais: "${nearestReminder.title}" — ${dateStr} ${timeStr}`);
+  }
+  
+  // 3. Today's summary
+  if (todayEvents > 0 || totalReminders > 0) {
+    const parts = [];
+    if (todayEvents > 0) {
+      parts.push(`${todayEvents} notikum${todayEvents === 1 ? 's' : 'i'}`);
+    }
+    if (totalReminders > 0) {
+      parts.push(`${totalReminders} atgādinājum${totalReminders === 1 ? 's' : 'i'}`);
+    }
+    if (parts.length > 0) {
+      lines.push(`📋 Šodien: ${parts.join(', ')}`);
+    }
+  }
+  
+  // 4. Shopping lists with unchecked items
+  if (shoppingWithItems.length > 0) {
+    const listNames = shoppingWithItems.slice(0, 2).map(l => {
+      const unchecked = (l.items || []).filter(i => !i.isChecked && !i.isCompleted).length;
+      return `${l.name} (${unchecked})`;
+    }).join(', ');
+    lines.push(`🛒 Nopirkt: ${listNames}`);
+  }
+  
+  // If nothing to show, simple greeting
+  if (lines.length === 0) {
+    lines.push("👋 Sveiki! Nav nepabeigtu uzdevumu.");
+  }
+  
+  // End with open question
+  lines.push("");
+  lines.push("Ko varu palīdzēt?");
+  
+  return lines.join('\n');
+}
+
+/**
+ * Build English daily snapshot
+ */
+function buildEnglishSnapshot(overdueReminders, nearestReminder, totalReminders, todayEvents, shoppingWithItems, timezone) {
+  const lines = [];
+  
+  // 1. Overdue reminders (highest priority)
+  if (overdueReminders.length > 0) {
+    lines.push(`⚠️ You have ${overdueReminders.length} overdue reminder${overdueReminders.length === 1 ? '' : 's'}:`);
+    overdueReminders.slice(0, 3).forEach(r => {
+      lines.push(`   • ${r.title}`);
+    });
+    if (overdueReminders.length > 3) {
+      lines.push(`   ...and ${overdueReminders.length - 3} more`);
+    }
+  }
+  
+  // 2. Nearest upcoming reminder
+  if (nearestReminder && nearestReminder.dueDate) {
+    const dueDate = new Date(nearestReminder.dueDate);
+    const timeStr = dueDate.toLocaleTimeString('en-US', { 
+      hour: '2-digit', 
+      minute: '2-digit',
+      hour12: true,
+      timeZone: timezone 
+    });
+    const dateStr = formatRelativeDate(dueDate, timezone, 'en');
+    lines.push(`⏰ Next up: "${nearestReminder.title}" — ${dateStr} ${timeStr}`);
+  }
+  
+  // 3. Today's summary
+  if (todayEvents > 0 || totalReminders > 0) {
+    const parts = [];
+    if (todayEvents > 0) {
+      parts.push(`${todayEvents} event${todayEvents === 1 ? '' : 's'}`);
+    }
+    if (totalReminders > 0) {
+      parts.push(`${totalReminders} reminder${totalReminders === 1 ? '' : 's'}`);
+    }
+    if (parts.length > 0) {
+      lines.push(`📋 Today: ${parts.join(', ')}`);
+    }
+  }
+  
+  // 4. Shopping lists with unchecked items
+  if (shoppingWithItems.length > 0) {
+    const listNames = shoppingWithItems.slice(0, 2).map(l => {
+      const unchecked = (l.items || []).filter(i => !i.isChecked && !i.isCompleted).length;
+      return `${l.name} (${unchecked})`;
+    }).join(', ');
+    lines.push(`🛒 To buy: ${listNames}`);
+  }
+  
+  // If nothing to show, simple greeting
+  if (lines.length === 0) {
+    lines.push("👋 Hi! No pending tasks.");
+  }
+  
+  // End with open question
+  lines.push("");
+  lines.push("What can I help with?");
+  
+  return lines.join('\n');
+}
+
+/**
+ * Format date relative to today
+ */
+function formatRelativeDate(date, timezone, lang) {
+  const now = new Date();
+  const today = new Date(now.toLocaleDateString('en-CA', { timeZone: timezone }));
+  const targetDate = new Date(date.toLocaleDateString('en-CA', { timeZone: timezone }));
+  
+  const diffDays = Math.floor((targetDate - today) / (1000 * 60 * 60 * 24));
+  
+  if (lang === 'lv') {
+    if (diffDays === 0) return 'šodien';
+    if (diffDays === 1) return 'rīt';
+    if (diffDays === 2) return 'parīt';
+    if (diffDays < 7) return date.toLocaleDateString('lv-LV', { weekday: 'long', timeZone: timezone });
+    return date.toLocaleDateString('lv-LV', { month: 'short', day: 'numeric', timeZone: timezone });
   }
   
   // English
-  let greeting = "Hello! 👋 I'm SmartChat, your personal assistant.";
-  
-  if (todayCount > 0 || reminderCount > 0) {
-    greeting += `\n\nToday you have:`;
-    if (todayCount > 0) greeting += `\n• ${todayCount} event${todayCount === 1 ? '' : 's'} in calendar`;
-    if (reminderCount > 0) greeting += `\n• ${reminderCount} active reminder${reminderCount === 1 ? '' : 's'}`;
-  }
-  
-  greeting += "\n\n💡 Try asking:";
-  greeting += "\n• \"What are my plans tomorrow?\"";
-  greeting += "\n• \"Create a reminder to call mom\"";
-  greeting += "\n• \"Reschedule meeting to 3 PM\"";
-  
-  return greeting;
+  if (diffDays === 0) return 'today';
+  if (diffDays === 1) return 'tomorrow';
+  if (diffDays < 7) return date.toLocaleDateString('en-US', { weekday: 'long', timeZone: timezone });
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: timezone });
 }
 
 /**
