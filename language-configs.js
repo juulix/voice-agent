@@ -11,7 +11,35 @@ const LV_FIXES = [
   [/\bnullei\b/gi, "nullē"],
   [/\bnulli\b/gi, "nulli"],
   [/\bdesmitos\b/gi, "desmitos"],
-  [/\bdivpadsmitos\b/gi, "divpadsmitos"]
+  [/\bdivpadsmitos\b/gi, "divpadsmitos"],
+  // Fix "grāmatu vedējs" → "grāmatvedis" (Whisper incorrectly splits the word)
+  [/\bgrāmatu\s+vedēj(s|a|u|am|iem|us|i|as)?\b/gi, (match, suffix) => {
+    const suffixMap = {
+      's': 'grāmatvedis',      // nominative singular
+      'a': 'grāmatveža',       // genitive singular
+      'u': 'grāmatvedi',       // accusative singular
+      'am': 'grāmatvedim',     // dative singular
+      'iem': 'grāmatvežiem',   // dative plural
+      'us': 'grāmatvežus',     // accusative plural
+      'i': 'grāmatveži',       // nominative plural
+      'as': 'grāmatvedes',     // genitive plural (feminine form)
+      '': 'grāmatvedi',        // base/default
+      undefined: 'grāmatvedi'
+    };
+    return suffixMap[suffix] || 'grāmatvedi';
+  }],
+  // Also handle "grāmatu vede" variations (feminine form)
+  [/\bgrāmatu\s+ved(e|es|ei|i)?\b/gi, (match, suffix) => {
+    const suffixMap = {
+      'e': 'grāmatvede',       // nominative singular feminine
+      'es': 'grāmatvedes',     // genitive singular feminine
+      'ei': 'grāmatvedei',     // dative singular feminine
+      'i': 'grāmatvedi',       // accusative singular feminine
+      '': 'grāmatvede',
+      undefined: 'grāmatvede'
+    };
+    return suffixMap[suffix] || 'grāmatvede';
+  }]
 ];
 
 const ET_FIXES = [
