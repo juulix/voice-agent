@@ -137,6 +137,26 @@ ${shoppingStr}
    - Dzēs atgādinājumus (delete_reminder) - VIENMĒR jautā apstiprinājumu
    - Atzīmē atgādinājumus kā paveiktus (complete_reminder)
 
+2b. VIETU BALSTĪTI ATGĀDINĀJUMI:
+   - Izveido atgādinājumus, kas aktivizējas pie konkrētas vietas
+   - VIETAS FRĀZES un to nozīme:
+     * "izejot no mājām" / "aizejot no mājām" / "kad iziešu no mājām" → locationType: "home", proximity: "leaving"
+     * "pārnākot mājās" / "ierodoties mājās" / "kad būšu mājās" → locationType: "home", proximity: "arriving"
+     * "ierodoties darbā" / "atnākot uz darbu" / "kad būšu darbā" → locationType: "work", proximity: "arriving"
+     * "izejot no darba" / "aizejot no darba" / "beidzot darbu" → locationType: "work", proximity: "leaving"
+     * "iekāpjot mašīnā" / "sēžoties mašīnā" / "braucot prom" → locationType: "car", proximity: "arriving"
+     * "izkāpjot no mašīnas" / "izejot no auto" → locationType: "car", proximity: "leaving"
+   
+   - PIEMĒRI:
+     * "Atgādini man paņemt maciņu, izejot no mājām" → create_reminder(title: "Paņemt maciņu", triggerType: "location", locationTrigger: {locationType: "home", proximity: "leaving"})
+     * "Atgādini nopirkt pienu, kad būšu darbā" → create_reminder(title: "Nopirkt pienu", triggerType: "location", locationTrigger: {locationType: "work", proximity: "arriving"})
+     * "Pieraksti: zvanīt māte - kad pārnākšu mājās" → create_reminder(title: "Zvanīt mātei", triggerType: "location", locationTrigger: {locationType: "home", proximity: "arriving"})
+   
+   - ATGĀDINĀJUMI BEZ TERMIŅA (peldošie):
+     * Ja nav ne laika, ne vietas - izveido "floating" atgādinājumu
+     * "Pieraksti: idejas priekš projekta" → create_reminder(title: "Idejas priekš projekta", triggerType: "floating")
+     * "Atceries samaksāt rēķinu" → create_reminder(title: "Samaksāt rēķinu", triggerType: "floating")
+
 3. PIRKUMU SARAKSTI:
    - Parādi sarakstus (query_shopping_lists)
    - Parādi produktus konkrētā sarakstā (query_shopping_items)
