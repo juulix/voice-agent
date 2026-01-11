@@ -478,6 +478,12 @@ export function getGreeting(language, context) {
   // Process reminders
   const activeReminders = (context.reminders || []).filter(r => !r.isCompleted);
   
+  // Calculate today's boundaries in the specified timezone
+  const todayStart = new Date(now.toLocaleDateString('en-CA', { timeZone: timezone }));
+  todayStart.setHours(0, 0, 0, 0);
+  const todayEnd = new Date(todayStart);
+  todayEnd.setDate(todayEnd.getDate() + 1);
+  
   // Find overdue reminders
   const overdueReminders = activeReminders.filter(r => {
     if (!r.dueDate) return false;
@@ -491,6 +497,16 @@ export function getGreeting(language, context) {
   
   const nearestReminder = upcomingReminders[0];
   
+  // Count TODAY's reminders only (not all reminders!)
+  const todayReminders = activeReminders.filter(r => {
+    if (!r.dueDate) return false; // Reminders without due date are not "today"
+    const dueDate = new Date(r.dueDate);
+    // Convert dueDate to timezone-aware date for comparison
+    const dueDateStart = new Date(dueDate.toLocaleDateString('en-CA', { timeZone: timezone }));
+    dueDateStart.setHours(0, 0, 0, 0);
+    return dueDateStart >= todayStart && dueDateStart < todayEnd;
+  });
+  
   // Today's events count
   const todayCount = context.todayEvents?.length || 0;
   
@@ -502,15 +518,15 @@ export function getGreeting(language, context) {
   
   // Build greeting based on language
   if (language === 'lv') {
-    return buildLatvianSnapshot(overdueReminders, nearestReminder, activeReminders.length, todayCount, shoppingWithItems, timezone);
+    return buildLatvianSnapshot(overdueReminders, nearestReminder, todayReminders.length, todayCount, shoppingWithItems, timezone);
   }
   
   if (language === 'et') {
-    return buildEnglishSnapshot(overdueReminders, nearestReminder, activeReminders.length, todayCount, shoppingWithItems, timezone);
+    return buildEnglishSnapshot(overdueReminders, nearestReminder, todayReminders.length, todayCount, shoppingWithItems, timezone);
   }
   
   // Default: English
-  return buildEnglishSnapshot(overdueReminders, nearestReminder, activeReminders.length, todayCount, shoppingWithItems, timezone);
+  return buildEnglishSnapshot(overdueReminders, nearestReminder, todayReminders.length, todayCount, shoppingWithItems, timezone);
 }
 
 /**
