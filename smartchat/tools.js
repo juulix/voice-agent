@@ -491,6 +491,123 @@ export const SMARTCHAT_TOOLS = [
     }
   },
 
+  // ===== ADVANCED FEATURES =====
+  {
+    type: "function",
+    function: {
+      name: "get_weekly_summary",
+      description: "Get a summary of the user's week - events, reminders, and tasks. Perfect for planning or reviewing the week ahead.",
+      parameters: {
+        type: "object",
+        properties: {
+          weekOffset: {
+            type: "number",
+            description: "Week offset: 0 = this week, 1 = next week, -1 = last week (default: 0)"
+          },
+          includeCompleted: {
+            type: "boolean",
+            description: "Include completed reminders/tasks (default: false)"
+          }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "snooze_reminder",
+      description: "Snooze a reminder to a later time. Use when user wants to delay a reminder.",
+      parameters: {
+        type: "object",
+        properties: {
+          reminderId: {
+            type: "string",
+            description: "Reminder identifier"
+          },
+          reminderTitle: {
+            type: "string",
+            description: "Reminder title (for confirmation display)"
+          },
+          snoozeUntil: {
+            type: "string",
+            description: "New due date/time in ISO format. Can also use relative: '+1hour', '+30min', '+1day', 'tomorrow 9:00'"
+          }
+        },
+        required: ["reminderId", "snoozeUntil"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_recurring_event",
+      description: "Create a recurring calendar event (daily, weekly, monthly, yearly).",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Event title"
+          },
+          startDate: {
+            type: "string",
+            description: "First occurrence start date/time in ISO format"
+          },
+          endDate: {
+            type: "string",
+            description: "First occurrence end date/time in ISO format (default: 1 hour after start)"
+          },
+          location: {
+            type: "string",
+            description: "Optional: Event location"
+          },
+          notes: {
+            type: "string",
+            description: "Optional: Event notes"
+          },
+          calendar: {
+            type: "string",
+            description: "Optional: Calendar name"
+          },
+          recurrenceRule: {
+            type: "object",
+            properties: {
+              frequency: {
+                type: "string",
+                enum: ["daily", "weekly", "monthly", "yearly"],
+                description: "Recurrence frequency"
+              },
+              interval: {
+                type: "number",
+                description: "Interval between occurrences (default: 1). E.g., interval=2 with weekly = every 2 weeks"
+              },
+              daysOfWeek: {
+                type: "array",
+                items: { type: "string", enum: ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] },
+                description: "For weekly: which days of week (e.g., ['monday', 'wednesday', 'friday'])"
+              },
+              endDate: {
+                type: "string",
+                description: "Optional: When recurrence ends (ISO format)"
+              },
+              count: {
+                type: "number",
+                description: "Optional: Number of occurrences (alternative to endDate)"
+              }
+            },
+            required: ["frequency"]
+          },
+          alerts: {
+            type: "array",
+            items: { type: "number" },
+            description: "Optional: Alert times in minutes before event"
+          }
+        },
+        required: ["title", "startDate", "recurrenceRule"]
+      }
+    }
+  },
+
   // ===== CLARIFICATION TOOL =====
   {
     type: "function",
@@ -538,6 +655,7 @@ export const QUERY_ONLY_TOOLS = [
   "find_free_time",
   "query_shopping_lists",
   "query_shopping_items",
+  "get_weekly_summary",
   "ask_clarification"
 ];
 
