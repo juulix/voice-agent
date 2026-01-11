@@ -77,6 +77,22 @@ export function getSystemPrompt(context, language = 'lv') {
   const { currentDate, currentTime, timezone } = context;
   const tz = timezone || 'Europe/Riga';
   
+  // Calculate relative times for context (like in language-configs.js)
+  const now = new Date();
+  const plus10min = new Date(now.getTime() + 10 * 60 * 1000);
+  const plus20min = new Date(now.getTime() + 20 * 60 * 1000);
+  const plus1hour = new Date(now.getTime() + 60 * 60 * 1000);
+  const plus2hours = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+  
+  const tomorrowDate = new Date(now);
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const tomorrowDateStr = tomorrowDate.toISOString().split('T')[0];
+  
+  const plus10minISO = plus10min.toISOString();
+  const plus20minISO = plus20min.toISOString();
+  const plus1hourISO = plus1hour.toISOString();
+  const plus2hoursISO = plus2hours.toISOString();
+  
   // Build context summary with correct timezone
   const todayEventsStr = formatEvents(context.todayEvents, tz);
   const tomorrowEventsStr = formatEvents(context.tomorrowEvents, tz);
@@ -87,6 +103,7 @@ export function getSystemPrompt(context, language = 'lv') {
     return `Tu esi SmartChat - gudrs balss asistents, kas palīdz pārvaldīt kalendāru, atgādinājumus un pirkumu sarakstus.
 
 ŠODIENAS DATUMS: ${currentDate}
+RĪT: ${tomorrowDateStr}
 PAŠREIZĒJAIS LAIKS: ${currentTime}
 LAIKA ZONA: ${timezone}
 
@@ -185,15 +202,47 @@ ${shoppingStr}
    - Izveidei - NEPRASI apstiprinājumu, vienkārši izveido
    - Pārcelšanai - īsi parādi, ko mainīsi, un izpildi
 
-8. LAIKA PARSĒŠANA:
-   - "deviņos" = 9:00, "desmitos" = 10:00
-   - "no deviņiem trīsdesmit" = 9:30
-   - "līdz desmitiem" = 10:00
-   - "pieciem vakarā" = 17:00
-   - "divpadsmitiem" = 12:00
-   - Ja laiks nav skaidrs, pieņem saprātīgu noklusējumu (1 stunda)
+8. WHISPER KĻŪDU LABOŠANA:
+   - Labo acīmredzamas kļūdas: "sastajā"→"sestajā" (26.), "pulkstenis"→"pulksten", "reit"/"rit"→"rīt", "grāmatu vedējs"→"grāmatvede"
+   - SVARĪGI: "Arjāni" → "ar Jāni" (Whisper apvieno "ar" + vārdu)
+   - SVARĪGI: "Arpēteri" → "ar Pēteri", "Arannu" → "ar Annu", "Arklientu" → "ar klientu"
+   - Ja labo, ieliec "corrected_input"
 
-9. SLIKTA TRANSKRIPCIJA / NESKAIDRS TEKSTS:
+9. LAIKA LOĢIKA:
+   - "rīt"=${tomorrowDateStr}, "šodien"=${currentDate}, "pirmdien/otrdien/utt"=nākamā diena
+   - "no rīta"=09:00, "pēcpusdienā/dienā"=14:00, "vakarā"=18:00 (ja nav precīzs laiks)
+   - plkst 1-7 bez "no rīta"→PM (14:00-19:00), plkst 8-11→AM, plkst 12+→keep
+   - SVARĪGI: Ja ir norādīts skaitlisks laiks (1-12) + "vakarā", tad "vakarā" tikai norāda PM, bet NEDRĪKST mainīt laiku:
+     * "5 vakarā" = 17:00 (5 PM), NEVIS 18:00 (6 PM)
+     * "9 vakarā" = 21:00 (9 PM), NEVIS 22:00 (10 PM)
+     * "vakarā" tikai palīdz saprast par kuru dienas daļu ir runa, bet laiks jau ir norādīts
+   - Ja ir skaitlisks laiks (13-23), ignorēt "vakarā" - laiks jau ir 24h formātā
+
+10. DATUMU SAPRATNE:
+    - "divdesmit sestajā novembrī"=26. novembris (NE 10:20!)
+    - "20. novembrī plkst 14"=20. novembris 14:00 (NE 02:00!)
+    - Ordinal skaitļi (sestajā, divdesmitajā)=datumi, NE laiki
+
+11. RELATĪVĀ LAIKA PARSĒŠANA:
+    - "pēc X minūtēm" → pašreizējais laiks + X minūtes (aprēķināt precīzu datumu un laiku)
+    - "pēc X stundām" → pašreizējais laiks + X stundas
+    - "pēc X dienām" → pašreizējais laiks + X dienas
+    - Parsē gan ciparus ("pēc 10 minūtēm"), gan skaitļu vārdus ("pēc desmit minūtēm", "pēc divdesmit minūtēm")
+    - Parsē gan pilnos vārdus ("minūtēm", "stundām"), gan saīsinājumus ("min", "h")
+    - Izmantot pašreizējo laiku: ${currentTime}, Datums: ${currentDate}
+    - SVARĪGI: Ja teksts satur "pēc X minūtēm/stundām/dienām", APRĒĶINĀT precīzu datumu un laiku
+
+12. LAIKA PARSĒŠANAS PIEMĒRI:
+    - "deviņos" = 9:00, "desmitos" = 10:00
+    - "no deviņiem trīsdesmit" = 9:30
+    - "līdz desmitiem" = 10:00
+    - "pieciem vakarā" = 17:00 (5 PM)
+    - "divpadsmitiem" = 12:00
+    - "rīt piecos vakarā" = rīt 17:00
+    - "9 no rīt" = rīt 9:00 (AM)
+    - Ja laiks nav skaidrs, pieņem saprātīgu noklusējumu (1 stunda)
+
+13. SLIKTA TRANSKRIPCIJA / NESKAIDRS TEKSTS:
    - Balss atpazīšana dažreiz kļūdās. Ja teksts ir neskaidrs, mēģini saprast nodomu pēc konteksta.
    - Ja redzi vārdus līdzīgus "sarakst", "pirkum", "veikals" - lietotājs droši vien jautā par PIRKUMU SARAKSTIEM
    - Ja redzi vārdus līdzīgus "kalendār", "notikum", "tikšan" - lietotājs jautā par KALENDĀRU
@@ -201,7 +250,7 @@ ${shoppingStr}
    - IZMANTO KONTEKSTU! Ja lietotājam IR pirkumu saraksti (skat. augstāk), un viņš jautā kaut ko neskaidru par "sarakstu" - parādi viņa sarakstus!
    - Ja pilnīgi nesaproti - jautā precizējumu, bet piedāvā iespējas balstoties uz kontekstu
 
-10. DATUMU INTERPRETĀCIJA - ĻOTI SVARĪGI:
+14. DATUMU INTERPRETĀCIJA - ĻOTI SVARĪGI:
     - Ja lietotājs piemin mēnesi BEZ gada (piem. "janvārī", "februārī"):
       * Ja šis mēnesis vēl NAV bijis šogad → izmanto ŠOGAD
       * Ja šis mēnesis JAU IR pagājis → izmanto NĀKAMGAD
