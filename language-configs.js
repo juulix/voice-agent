@@ -12,6 +12,15 @@ const LV_FIXES = [
   [/\bnulli\b/gi, "nulli"],
   [/\bdesmitos\b/gi, "desmitos"],
   [/\bdivpadsmitos\b/gi, "divpadsmitos"],
+  // Fix "Arjāni" → "ar Jāni" (Whisper apvieno "ar" + vārdu)
+  // Atpazīst "Ar" + vārdu (ar lielo vai mazo burtu) un sadala atpakaļ
+  [/\bAr([a-zāčēģīķļņōŗšūž][a-zāčēģīķļņōŗšūž]+)\b/g, (match, name) => {
+    // Pirmo burtu padara lielo: "jāni" → "Jāni"
+    const capitalized = name.charAt(0).toUpperCase() + name.slice(1);
+    return `ar ${capitalized}`;
+  }],
+  // Also handle "Ar" + vārds, kas jau sākas ar lielo burtu
+  [/\bAr([A-ZĀČĒĢĪĶĻŅŌŖŠŪŽ][a-zāčēģīķļņōŗšūž]+)\b/g, (match, name) => `ar ${name}`],
   // Fix "grāmatu vedējs" → "grāmatvedis" (Whisper incorrectly splits the word)
   [/\bgrāmatu\s+vedēj(s|a|u|am|iem|us|i|as)?\b/gi, (match, suffix) => {
     const suffixMap = {
