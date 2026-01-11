@@ -229,7 +229,7 @@ export const SMARTCHAT_TOOLS = [
     type: "function",
     function: {
       name: "create_reminder",
-      description: "Create a new reminder.",
+      description: "Create a new reminder. Supports time-based, location-based, or floating (no trigger) reminders.",
       parameters: {
         type: "object",
         properties: {
@@ -237,9 +237,31 @@ export const SMARTCHAT_TOOLS = [
             type: "string",
             description: "Reminder title"
           },
+          triggerType: {
+            type: "string",
+            enum: ["time", "location", "floating"],
+            description: "Trigger type: 'time' (default with dueDate), 'location' (triggers at place), 'floating' (no trigger, just a task)"
+          },
           dueDate: {
             type: "string",
-            description: "Optional: Due date and time in ISO format"
+            description: "For time-based: Due date and time in ISO format"
+          },
+          locationTrigger: {
+            type: "object",
+            description: "For location-based reminders",
+            properties: {
+              locationType: {
+                type: "string",
+                enum: ["home", "work", "car"],
+                description: "Location type: home (user's home), work (user's workplace), car (getting in/out of car)"
+              },
+              proximity: {
+                type: "string",
+                enum: ["arriving", "leaving"],
+                description: "Trigger when: 'arriving' (entering location) or 'leaving' (exiting location)"
+              }
+            },
+            required: ["locationType", "proximity"]
           },
           list: {
             type: "string",
