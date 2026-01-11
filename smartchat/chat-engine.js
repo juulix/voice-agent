@@ -15,6 +15,81 @@ const CHAT_MODEL = process.env.SMARTCHAT_MODEL || "gpt-4o";
 const MAX_TOKENS = 1000;
 const TEMPERATURE = 0.3;
 
+// Latvian text normalization rules (Whisper error corrections)
+const LV_FIXES = [
+  [/^\s*reit\b/gi, "rīt"],
+  [/\breit\b/gi, "rīt"],
+  [/\brit\b/gi, "rīt"],
+  [/\bpulkstenis\b/gi, "pulksten"],
+  [/\btikšanas\b/gi, "tikšanās"],
+  [/\btikšanos\b/gi, "tikšanās"],
+  [/\bnullei\b/gi, "nullē"],
+  [/\bnulli\b/gi, "nulli"],
+  [/\bdesmitos\b/gi, "desmitos"],
+  [/\bdivpadsmitos\b/gi, "divpadsmitos"],
+  // Fix "irbatgadinajums" → "ir atgādinājums" (Whisper merges words)
+  [/\birbatgadinajums\b/gi, "ir atgādinājums"],
+  [/\birbatgadinajumi\b/gi, "ir atgādinājumi"],
+  [/\birbatgadinajuma\b/gi, "ir atgādinājuma"],
+  // Fix "Arjāni" → "ar Jāni" (Whisper merges "ar" + name)
+  [/\bAr([a-zāčēģīķļņōŗšūž][a-zāčēģīķļņōŗšūž]+)\b/g, (match, name) => {
+    const capitalized = name.charAt(0).toUpperCase() + name.slice(1);
+    return `ar ${capitalized}`;
+  }],
+  [/\bAr([A-ZĀČĒĢĪĶĻŅŌŖŠŪŽ][a-zāčēģīķļņōŗšūž]+)\b/g, (match, name) => `ar ${name}`],
+  // Fix "grāmatu vedējs" → "grāmatvedis"
+  [/\bgrāmatu\s+vedēj(s|a|u|am|iem|us|i|as)?\b/gi, (match, suffix) => {
+    const suffixMap = {
+      's': 'grāmatvedis', 'a': 'grāmatveža', 'u': 'grāmatvedi',
+      'am': 'grāmatvedim', 'iem': 'grāmatvežiem', 'us': 'grāmatvežus',
+      'i': 'grāmatveži', 'as': 'grāmatvedes', '': 'grāmatvedi', undefined: 'grāmatvedi'
+    };
+    return suffixMap[suffix] || 'grāmatvedi';
+  }],
+  [/\bgrāmatu\s+ved(e|es|ei|i)?\b/gi, (match, suffix) => {
+    const suffixMap = {
+      'e': 'grāmatvede', 'es': 'grāmatvedes', 'ei': 'grāmatvedei',
+      'i': 'grāmatvedi', '': 'grāmatvede', undefined: 'grāmatvede'
+    };
+    return suffixMap[suffix] || 'grāmatvede';
+  }],
+  // Fix "vakar diena" → "vakardiena"
+  [/\bvakar\s+diena\b/gi, "vakardiena"],
+  [/\bpor diena\b/gi, "pordiena"],
+  // Fix "pār domu" → "pārdomu"
+  [/\bpār\s+domu\b/gi, "pārdomu"],
+  [/\bpār\s+domas\b/gi, "pārdomas"]
+];
+
+const ET_FIXES = [
+  [/^\s*homme\b/gi, "homme"],
+  [/\bkell\b/gi, "kell"]
+];
+
+/**
+ * Apply language-specific normalization to text
+ * @param {string} text - Input text
+ * @param {string} language - Language code (lv, et, en)
+ * @returns {string} Normalized text
+ */
+function normalizeText(text, language) {
+  if (!text) return text;
+  
+  let normalized = text;
+  const fixes = language === 'et' ? ET_FIXES : (language === 'lv' ? LV_FIXES : []);
+  
+  for (const [pattern, replacement] of fixes) {
+    normalized = normalized.replace(pattern, replacement);
+  }
+  
+  // Log if normalization changed the text
+  if (normalized !== text) {
+    console.log(`[SmartChat] Normalized: "${text}" → "${normalized}"`);
+  }
+  
+  return normalized;
+}
+
 /**
  * Process a user message and generate a response
  * @param {object} session - Chat session
@@ -25,13 +100,16 @@ export async function processMessage(session, userMessage) {
   const startTime = Date.now();
   
   try {
-    // Add user message to history
-    addMessage(session.id, 'user', userMessage);
+    // Apply language-specific normalization (fix Whisper errors)
+    const normalizedMessage = normalizeText(userMessage, session.language);
+    
+    // Add user message to history (normalized)
+    addMessage(session.id, 'user', normalizedMessage);
     
     // Build messages array for GPT
-    const messages = buildMessages(session, userMessage);
+    const messages = buildMessages(session, normalizedMessage);
     
-    console.log(`[SmartChat ${session.id}] Processing message: "${userMessage.substring(0, 50)}..."`);
+    console.log(`[SmartChat ${session.id}] Processing message: "${normalizedMessage.substring(0, 50)}..."`);
     
     // Call GPT with tools
     const response = await openai.chat.completions.create({
@@ -67,10 +145,25 @@ export async function processMessage(session, userMessage) {
   } catch (error) {
     console.error(`[SmartChat ${session.id}] Error:`, error.message);
     
-    // Return error message
-    const errorMessage = session.language === 'lv' 
-      ? "Atvainojiet, radās kļūda. Lūdzu, mēģiniet vēlreiz."
-      : "Sorry, an error occurred. Please try again.";
+    // Provide specific error messages based on error type
+    let errorMessage;
+    if (error.code === 'rate_limit_exceeded' || error.message.includes('rate limit')) {
+      errorMessage = session.language === 'lv'
+        ? "Pārāk daudz pieprasījumu. Lūdzu, uzgaidiet dažas sekundes."
+        : "Too many requests. Please wait a few seconds.";
+    } else if (error.message.includes('timeout') || error.code === 'ETIMEDOUT') {
+      errorMessage = session.language === 'lv'
+        ? "Servera atbilde aizņēma pārāk ilgu laiku. Lūdzu, mēģiniet vēlreiz."
+        : "Server response took too long. Please try again.";
+    } else if (error.message.includes('network') || error.code === 'ENOTFOUND') {
+      errorMessage = session.language === 'lv'
+        ? "Tīkla kļūda. Lūdzu, pārbaudiet savienojumu."
+        : "Network error. Please check your connection.";
+    } else {
+      errorMessage = session.language === 'lv' 
+        ? "Atvainojiet, radās kļūda. Lūdzu, mēģiniet vēlreiz."
+        : "Sorry, an error occurred. Please try again.";
+    }
     
     return {
       type: "error",
@@ -375,9 +468,22 @@ export async function processToolResult(session, toolCallId, success, result, er
     console.error(`[SmartChat ${session.id}] Error processing tool result:`, err.message);
     console.error(`[SmartChat ${session.id}] Full error:`, err);
     
-    const errorMessage = session.language === 'lv'
-      ? "Atvainojiet, radās kļūda apstrādājot rezultātu."
-      : "Sorry, an error occurred while processing the result.";
+    // Provide specific error messages
+    let errorMessage;
+    if (err.message.includes('tool_call_ids')) {
+      // OpenAI API error about tool call history
+      errorMessage = session.language === 'lv'
+        ? "Sesijas kļūda. Lūdzu, sāciet jaunu sarunu."
+        : "Session error. Please start a new conversation.";
+    } else if (err.code === 'rate_limit_exceeded') {
+      errorMessage = session.language === 'lv'
+        ? "Pārāk daudz pieprasījumu. Uzgaidiet brīdi."
+        : "Too many requests. Please wait a moment.";
+    } else {
+      errorMessage = session.language === 'lv'
+        ? "Atvainojiet, radās kļūda apstrādājot rezultātu."
+        : "Sorry, an error occurred while processing the result.";
+    }
     
     return {
       type: "error",
@@ -387,6 +493,17 @@ export async function processToolResult(session, toolCallId, success, result, er
     };
   }
 }
+
+// Timeout helper for promises
+const withTimeout = (promise, ms, errorMessage) => {
+  const timeout = new Promise((_, reject) => 
+    setTimeout(() => reject(new Error(errorMessage)), ms)
+  );
+  return Promise.race([promise, timeout]);
+};
+
+// Transcription timeout (30 seconds)
+const TRANSCRIPTION_TIMEOUT_MS = 30000;
 
 /**
  * Process audio message (transcribe and then process as text)
@@ -402,12 +519,16 @@ export async function processAudioMessage(session, audioBuffer, filename = "audi
     // Import toFile helper
     const { toFile } = await import("openai/uploads");
     
-    // Transcribe audio
+    // Transcribe audio with timeout
     const file = await toFile(audioBuffer, filename);
-    const transcription = await openai.audio.transcriptions.create({
-      model: "gpt-4o-mini-transcribe",
-      file
-    });
+    const transcription = await withTimeout(
+      openai.audio.transcriptions.create({
+        model: "gpt-4o-mini-transcribe",
+        file
+      }),
+      TRANSCRIPTION_TIMEOUT_MS,
+      "Transcription timeout after 30 seconds"
+    );
     
     const transcript = transcription.text?.trim();
     
@@ -424,23 +545,41 @@ export async function processAudioMessage(session, audioBuffer, filename = "audi
     const transcriptionTime = Date.now() - startTime;
     console.log(`[SmartChat ${session.id}] Transcribed in ${transcriptionTime}ms: "${transcript.substring(0, 50)}..."`);
     
-    // Process as text message
+    // Apply normalization to transcript before processing
+    const normalizedTranscript = normalizeText(transcript, session.language);
+    
+    // Process as text message (which will also normalize, but we want the transcript too)
     const result = await processMessage(session, transcript);
     
     return {
       ...result,
-      transcript,
+      transcript: normalizedTranscript, // Return normalized transcript to user
+      originalTranscript: transcript !== normalizedTranscript ? transcript : undefined,
       transcriptionTime
     };
     
   } catch (error) {
     console.error(`[SmartChat ${session.id}] Audio processing error:`, error.message);
     
+    // Provide specific error messages based on error type
+    let userMessage;
+    if (error.message.includes("timeout")) {
+      userMessage = session.language === 'lv'
+        ? "Audio apstrāde aizņēma pārāk ilgu laiku. Lūdzu, mēģiniet īsāku ierakstu."
+        : "Audio processing took too long. Please try a shorter recording.";
+    } else if (error.message.includes("network") || error.message.includes("ENOTFOUND")) {
+      userMessage = session.language === 'lv'
+        ? "Tīkla kļūda. Lūdzu, pārbaudiet interneta savienojumu."
+        : "Network error. Please check your internet connection.";
+    } else {
+      userMessage = session.language === 'lv'
+        ? "Neizdevās apstrādāt audio. Lūdzu, mēģiniet vēlreiz."
+        : "Failed to process audio. Please try again.";
+    }
+    
     return {
       type: "error",
-      message: session.language === 'lv'
-        ? "Neizdevās apstrādāt audio. Lūdzu, mēģiniet vēlreiz."
-        : "Failed to process audio. Please try again.",
+      message: userMessage,
       error: error.message,
       sessionId: session.id
     };
