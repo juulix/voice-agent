@@ -408,8 +408,8 @@ app.use((req, res, next) => {
 const plans = {
   free:     { dailyLimit: 999999, monthlyLimit: 10, notesMinutesLimit: 3 },        // Free: 10 ieraksti/mēn, 3 min Notes/mēn
   basic:    { dailyLimit: 999999, monthlyLimit: 150, notesMinutesLimit: 15 },       // Standarta: 150 ieraksti/mēn, 15 min Notes/mēn, 1.99 EUR/mēn
-  pro:      { dailyLimit: 999999, monthlyLimit: 300, notesMinutesLimit: 120 },       // Pro: 300 ieraksti/mēn, 120 min Notes/mēn, 2.99 EUR/mēn
-  "pro-yearly": { dailyLimit: 999999, monthlyLimit: 300, notesMinutesLimit: 120 },  // Pro Yearly: 300 ieraksti/mēn, 120 min Notes/mēn (ikmēneša limits), 29.99 EUR/gadā
+  pro:      { dailyLimit: 999999, monthlyLimit: null, notesMinutesLimit: null },   // Pro: neierobežots (5.99 EUR/mēn)
+  "pro-yearly": { dailyLimit: 999999, monthlyLimit: null, notesMinutesLimit: null }, // Pro Yearly: neierobežots (29.99 EUR/gadā)
   dev:      { dailyLimit: 999999, monthlyLimit: 999999, notesMinutesLimit: null }     // Dev: bez limits (testēšanai)
 };
 const GRACE_DAILY = 2; // “kļūdu buferis” – ne-soda mēģinājumi dienā
@@ -860,7 +860,7 @@ function guessMime(filename) {
 }
 function getPlanLimits(planHeader) {
   const p = (planHeader || "").toLowerCase();
-  if (p === "pro-yearly") return { plan: "pro-yearly", dailyLimit: plans["pro-yearly"].dailyLimit, monthlyLimit: 300, notesMinutesLimit: plans["pro-yearly"].notesMinutesLimit };
+  if (p === "pro-yearly") return { plan: "pro-yearly", dailyLimit: plans["pro-yearly"].dailyLimit, monthlyLimit: plans["pro-yearly"].monthlyLimit, notesMinutesLimit: plans["pro-yearly"].notesMinutesLimit };
   if (p === "pro") return { plan: "pro", dailyLimit: plans.pro.dailyLimit, monthlyLimit: plans.pro.monthlyLimit, notesMinutesLimit: plans.pro.notesMinutesLimit };
   if (p === "basic") return { plan: "basic", dailyLimit: plans.basic.dailyLimit, monthlyLimit: plans.basic.monthlyLimit, notesMinutesLimit: plans.basic.notesMinutesLimit };
   if (p === "dev") return { plan: "dev", dailyLimit: plans.dev.dailyLimit, monthlyLimit: plans.dev.monthlyLimit, notesMinutesLimit: plans.dev.notesMinutesLimit };
@@ -1487,7 +1487,7 @@ app.get("/quota", async (req, res) => {
       requestId: req.requestId
     };
     
-    // Add monthly limits for all plans (basic, pro, pro-yearly all have monthly limits that reset each month)
+    // Add monthly limits (basic has monthly limit; pro and pro-yearly are unlimited)
     if (limits.monthlyLimit !== null && limits.monthlyLimit !== undefined) {
       out.monthlyLimit = limits.monthlyLimit;
       out.monthlyUsed = u.monthly.used;
@@ -1803,7 +1803,7 @@ app.post("/ingest-audio", async (req, res) => {
     if (u.daily.used >= limits.dailyLimit) {
       return res.status(429).json({ error: "quota_exceeded", plan: limits.plan });
     }
-    // Check monthly limits for all plans (basic, pro, pro-yearly all have monthly limits that reset each month)
+    // Check monthly limits (basic has monthly limit; pro and pro-yearly are unlimited)
     if (limits.monthlyLimit !== null && limits.monthlyLimit !== undefined) {
       if (u.monthly.used >= limits.monthlyLimit) {
         return res.status(429).json({ error: "monthly_quota_exceeded", plan: limits.plan });
