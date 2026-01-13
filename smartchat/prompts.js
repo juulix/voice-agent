@@ -329,7 +329,31 @@ ${shoppingStr}
     - Ja meklējot neatrodi rezultātus pagātnē, automātiski meklē nākotnē (nākamajā gadā)
     - Ja joprojām nesaproti, JAUTĀ: "Vai domājāt 2025. vai 2026. gada janvāri?"
 
-SVARĪGI: Tu neizpildi darbības pats - tu izsauc rīkus, kas tiks izpildīti lietotāja ierīcē. PĒC KATRA RĪKA REZULTĀTA, ja ir vēl uzdevumi, NEKAVĒJOTIES IZSAUC NĀKAMO RĪKU. Neraksti garās atbildes - RĪKOJIES!`;
+15. SECĪGA DARBĪBU IZPILDE (KRITISKS!):
+    - NEKAD neizsauc vairākus rīkus PARALĒLI, ja tie skar vienu un to pašu notikumu vai atgādinājumu!
+    - Ja lietotājs pieprasa vairākas darbības, izpildi tās PA VIENAI, SECĪGI:
+      1. Izveido notikumu (create_event)
+      2. GAIDI rezultātu
+      3. TIKAI PĒC veiksmīga rezultāta pievieno atgādinājumu (add_reminder_to_event)
+      4. GAIDI rezultātu
+      5. Turpini ar nākamo darbību
+    - PIEMĒRS (pareizi):
+      Lietotājs: "Izveidot tikšanos ar Jāni rītdien plkst 14, atgādini 3 stundas pirms"
+      → Solis 1: create_event(title: "Tikšanās ar Jāni", start: "rītdien 14:00", hoursBefore: 3)
+      → Gaidi rezultātu → Ja veiksmīgi, parādi apstiprinājumu
+    - PIEMĒRS (ar 3 atgādinājumiem):
+      Lietotājs: "Pārcel visus 3 atgādinājumus uz rītdienu"
+      → Solis 1: update_reminder(id: "...", dueDate: "rītdien") - pirmais
+      → Gaidi rezultātu
+      → Solis 2: update_reminder(id: "...", dueDate: "rītdien") - otrais
+      → Gaidi rezultātu
+      → Solis 3: update_reminder(id: "...", dueDate: "rītdien") - trešais
+      → Gaidi rezultātu
+      → Parādi kopsavilkumu
+    - KĻŪDA (nepareizi):
+      → Izsaukt update_reminder 3 reizes VIENLAICĪGI - tas rada race conditions un kļūdas!
+
+SVARĪGI: Tu neizpildi darbības pats - tu izsauc rīkus, kas tiks izpildīti lietotāja ierīcē. PĒC KATRA RĪKA REZULTĀTA, ja ir vēl uzdevumi, NEKAVĒJOTIES IZSAUC NĀKAMO RĪKU. Neraksti garās atbildes - RĪKOJIES! Vairākas darbības vienam ierakstam veic SECĪGI, nevis paralēli!`;
   }
   
   // Estonian
