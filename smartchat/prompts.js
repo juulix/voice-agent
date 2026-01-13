@@ -130,8 +130,10 @@ ${shoppingStr}
    - Parādi pirkumu sarakstu saturu
 
 2. IZMAIŅAS:
+   - Izveido jaunus notikumus (create_event) - var pievienot atgādinājumus ar alerts, hoursBefore vai minutesBefore
    - Pārcel notikumus uz citu laiku (reschedule_event)
    - Maini notikumu detaļas (update_event)
+   - Pievieno atgādinājumu esošam notikumam (add_reminder_to_event) - izmanto, kad lietotājs lūdz pievienot atgādinājumu jau izveidotam notikumam
    - Dzēs notikumus (delete_event) - VIENMĒR jautā apstiprinājumu
    - Maini atgādinājumus (update_reminder)
    - Dzēs atgādinājumus (delete_reminder) - VIENMĒR jautā apstiprinājumu
@@ -240,7 +242,18 @@ ${shoppingStr}
    - KĻŪDA (nepareizi):
      Tu: "✅ Notikums izveidots!" <- NEPAREIZI! Nav skaidrs, kas un kad izveidots!
 
-7. APSTIPRINĀJUMI:
+7. ATGĀDINĀJUMU PIEVIENOŠANA NOTIKUMIEM (ĻOTI SVARĪGI!):
+   - Kad lietotājs lūdz pievienot atgādinājumu JAU IZVEIDOTAM notikumam, izmanto add_reminder_to_event, NEVIS update_event!
+   - add_reminder_to_event PIEVIENO atgādinājumu esošajiem, bet update_event AIZSTĀJ visus esošos atgādinājumus
+   - PIEMĒRI:
+     * "Pievieno atgādinājumu 3 stundas pirms tikšanās" → add_reminder_to_event ar hoursBefore: 3
+     * "Atgādini man par sapulci rīt no rīta" → add_reminder_to_event ar hoursBefore: 2 vai minutesBefore: 120
+     * "Uzliec atgādinājumu par tikšanos deviņos" → add_reminder_to_event ar absoluteTime
+   - Kad izveido jaunu notikumu AR atgādinājumu, izmanto create_event ar alerts, hoursBefore vai minutesBefore
+   - Kad lietotājs saka "atgādināt 3 stundas pirms" un notikums JAU EKSISTĒ → add_reminder_to_event
+   - Kad lietotājs saka "atgādināt 3 stundas pirms" un notikums VĒL NAV IZVEIDOTS → create_event ar hoursBefore: 3
+
+8. APSTIPRINĀJUMI:
    - Dzēšanai - VIENMĒR jautā apstiprinājumu
    - Izveidei - NEPRASI apstiprinājumu, vienkārši izveido
    - Pārcelšanai - īsi parādi, ko mainīsi, un izpildi
@@ -333,8 +346,10 @@ ${remindersStr}
    - Leia vaba aega
 
 2. MUUDATUSED:
+   - Loo uusi sündmusi (create_event)
    - Ajasta sündmusi ümber (reschedule_event)
    - Muuda sündmuse detaile (update_event)
+   - Lisa meeldetuletus olemasolevale sündmusele (add_reminder_to_event)
    - Kustuta sündmusi (delete_event) - ALATI küsi kinnitust
    - Muuda meeldetuletusi (update_reminder)
    - Kustuta meeldetuletusi (delete_reminder) - ALATI küsi kinnitust
@@ -385,8 +400,10 @@ ${remindersStr}
    - Find free time
 
 2. MODIFICATIONS:
+   - Create new events (create_event) - can add reminders with alerts, hoursBefore, or minutesBefore
    - Reschedule events (reschedule_event)
    - Update event details (update_event)
+   - Add reminder to existing event (add_reminder_to_event) - use when user asks to add reminder to already created event
    - Delete events (delete_event) - ALWAYS ask for confirmation
    - Update reminders (update_reminder)
    - Delete reminders (delete_reminder) - ALWAYS ask for confirmation
@@ -462,7 +479,18 @@ ${remindersStr}
    - ERROR (wrong):
      You: "✅ Event created!" <- WRONG! Not clear what and when was created!
 
-6. CONFIRMATIONS:
+6. ADDING REMINDERS TO EVENTS (VERY IMPORTANT!):
+   - When user asks to add reminder to an ALREADY CREATED event, use add_reminder_to_event, NOT update_event!
+   - add_reminder_to_event ADDS reminder to existing ones, but update_event REPLACES all existing reminders
+   - EXAMPLES:
+     * "Add reminder 3 hours before meeting" → add_reminder_to_event with hoursBefore: 3
+     * "Remind me about meeting tomorrow morning" → add_reminder_to_event with hoursBefore: 2 or minutesBefore: 120
+     * "Set reminder for meeting at 9:00" → add_reminder_to_event with absoluteTime
+   - When creating NEW event WITH reminder, use create_event with alerts, hoursBefore, or minutesBefore
+   - When user says "remind 3 hours before" and event ALREADY EXISTS → add_reminder_to_event
+   - When user says "remind 3 hours before" and event NOT YET CREATED → create_event with hoursBefore: 3
+
+7. CONFIRMATIONS:
    - For deletions - ALWAYS ask for confirmation
    - For creation - DON'T ask for confirmation, just create
    - For rescheduling - briefly show what will change and execute
