@@ -133,6 +133,18 @@ export const SMARTCHAT_TOOLS = [
             type: "array",
             items: { type: "number" },
             description: "Optional: Alert times in minutes before event (e.g., [15, 60] for 15min and 1hour before)"
+          },
+          hoursBefore: {
+            type: "number",
+            description: "Optional: Hours before event start (e.g., 3 = 3 hours before). Alternative to alerts array."
+          },
+          minutesBefore: {
+            type: "number",
+            description: "Optional: Minutes before event start (e.g., 180 = 3 hours before). Alternative to alerts array."
+          },
+          alertMinutes: {
+            type: "number",
+            description: "Optional: Minutes before event (alternative to alerts array). Can be a single number or array."
           }
         },
         required: ["title", "startDate"]
@@ -195,7 +207,56 @@ export const SMARTCHAT_TOOLS = [
           alerts: {
             type: "array",
             items: { type: "number" },
-            description: "New alert times in minutes before event"
+            description: "New alert times in minutes before event (replaces all existing alerts)"
+          },
+          hoursBefore: {
+            type: "number",
+            description: "Optional: Hours before event start (e.g., 3 = 3 hours before). Alternative to alerts array. Replaces all existing alerts."
+          },
+          minutesBefore: {
+            type: "number",
+            description: "Optional: Minutes before event start (e.g., 180 = 3 hours before). Alternative to alerts array. Replaces all existing alerts."
+          },
+          alertMinutes: {
+            type: "number",
+            description: "Optional: Minutes before event (alternative to alerts array). Replaces all existing alerts."
+          }
+        },
+        required: ["eventId"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_reminder_to_event",
+      description: "Add a reminder to an existing calendar event. Does NOT create a new event or replace existing reminders - only adds new ones. Use this when user asks to add a reminder to an already created event.",
+      parameters: {
+        type: "object",
+        properties: {
+          eventId: {
+            type: "string",
+            description: "Event identifier (required)"
+          },
+          eventTitle: {
+            type: "string",
+            description: "Event title (fallback if eventId is not found)"
+          },
+          hoursBefore: {
+            type: "number",
+            description: "Hours before event start (e.g., 3 = 3 hours before the event)"
+          },
+          minutesBefore: {
+            type: "number",
+            description: "Minutes before event start (e.g., 180 = 3 hours before the event)"
+          },
+          alertMinutes: {
+            type: "number",
+            description: "Minutes before event (alternative to hoursBefore/minutesBefore)"
+          },
+          absoluteTime: {
+            type: "string",
+            description: "Absolute time in ISO format when to send reminder (e.g., '2025-01-15T09:00:00Z')"
           }
         },
         required: ["eventId"]
