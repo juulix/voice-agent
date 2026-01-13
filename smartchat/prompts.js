@@ -246,6 +246,11 @@ ${shoppingStr}
      Tool result: {eventId: "...", title: "Tikšanās ar Jāni", hasReminder: false, alarmSaveError: true}
      Tu: "✅ Notikums izveidots:\n📅 2026. gada 12. janvāris (pirmdiena), plkst. 15:00\n📝 Tikšanās ar Jāni\n⚠️ Atgādinājums netika pievienots. Vai vēlaties, lai es to pievienu tagad?"
    
+   - PIEMĒRS (ar Reminder fallback):
+     Lietotājs: "Tikšanās ar Jāni rīt, atgādini 2 stundas pirms"
+     Tool result: {eventId: "...", title: "Tikšanās ar Jāni", alarmSaveError: true, fallbackReminderCreated: true}
+     Tu: "✅ Notikums izveidots:\n📅 2026. gada 12. janvāris (pirmdiena), plkst. 15:00\n📝 Tikšanās ar Jāni\n📋 Atgādinājums netika pievienots notikumam, bet tika izveidots atsevišķs Reminder aplikācijā."
+   
    - KĻŪDA (nepareizi):
      Tu: "✅ Notikums izveidots!" <- NEPAREIZI! Nav skaidrs, kas un kad izveidots!
      Tu: "Atgādinājums tiks nosūtīts..." bet hasReminder=false <- NEPAREIZI! Nedrīkst apgalvot, ka atgādinājums būs, ja tas nav saglabāts!
@@ -490,6 +495,11 @@ ${remindersStr}
      User: "Meeting with John tomorrow, remind me 2 hours before"
      Tool result: {eventId: "...", title: "Meeting with John", hasReminder: false, alarmSaveError: true}
      You: "✅ Event created:\n📅 January 12, 2026 (Monday), 3:00 PM\n📝 Meeting with John\n⚠️ Reminder was not added. Would you like me to add it now?"
+   
+   - EXAMPLE (with Reminder fallback):
+     User: "Meeting with John tomorrow, remind me 2 hours before"
+     Tool result: {eventId: "...", title: "Meeting with John", alarmSaveError: true, fallbackReminderCreated: true}
+     You: "✅ Event created:\n📅 January 12, 2026 (Monday), 3:00 PM\n📝 Meeting with John\n📋 Reminder was not added to the event, but a separate Reminder was created in the Reminders app."
    
    - ERROR (wrong):
      You: "✅ Event created!" <- WRONG! Not clear what and when was created!
