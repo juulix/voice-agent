@@ -574,6 +574,175 @@ export const SMARTCHAT_TOOLS = [
     }
   },
 
+  // ===== TODO LIST TOOLS =====
+  {
+    type: "function",
+    function: {
+      name: "query_todos",
+      description: "Query todo items. Can filter by list, category, completion status, date, and search text. Use this to find todos matching specific criteria.",
+      parameters: {
+        type: "object",
+        properties: {
+          list: {
+            type: "string",
+            description: "Optional: Filter by todo list name"
+          },
+          category: {
+            type: "string",
+            description: "Optional: Filter by category name (e.g., 'Darbs', 'Mājas', 'Personīgi', 'Pirkumi')"
+          },
+          completed: {
+            type: "boolean",
+            description: "Optional: Filter by completion status (true = completed, false = incomplete). Default: false (only incomplete)"
+          },
+          date: {
+            type: "string",
+            description: "Optional: Filter by due date (YYYY-MM-DD). Use 'today', 'tomorrow', or specific date"
+          },
+          searchText: {
+            type: "string",
+            description: "Optional: Search text to match in todo title"
+          }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_todo",
+      description: "Create a new todo item. Can add to existing list or create new list. Supports due dates, categories, and priorities.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Todo item title (required)"
+          },
+          list: {
+            type: "string",
+            description: "Optional: Todo list name. If list doesn't exist, it will be created. If not provided, uses default list."
+          },
+          dueDate: {
+            type: "string",
+            description: "Optional: Due date in ISO format (YYYY-MM-DD) or relative ('today', 'tomorrow', 'day after tomorrow')"
+          },
+          category: {
+            type: "string",
+            description: "Optional: Category name (e.g., 'Darbs', 'Mājas', 'Personīgi', 'Pirkumi')"
+          },
+          priority: {
+            type: "string",
+            enum: ["none", "low", "medium", "high"],
+            description: "Optional: Priority level (default: 'none')"
+          },
+          notes: {
+            type: "string",
+            description: "Optional: Additional notes for the todo"
+          }
+        },
+        required: ["title"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_todo",
+      description: "Update an existing todo item. Can change title, due date, category, priority, or notes.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "Todo item ID (required)"
+          },
+          title: {
+            type: "string",
+            description: "Optional: New title"
+          },
+          dueDate: {
+            type: "string",
+            description: "Optional: New due date in ISO format (YYYY-MM-DD) or relative ('today', 'tomorrow'). Use null to remove due date."
+          },
+          category: {
+            type: "string",
+            description: "Optional: New category name. Use null to remove category."
+          },
+          priority: {
+            type: "string",
+            enum: ["none", "low", "medium", "high"],
+            description: "Optional: New priority level"
+          },
+          notes: {
+            type: "string",
+            description: "Optional: New notes. Use empty string to remove notes."
+          }
+        },
+        required: ["id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "complete_todo",
+      description: "Mark a todo item as completed (or uncomplete if already completed). Toggles completion status.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "Todo item ID (required)"
+          }
+        },
+        required: ["id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_todo",
+      description: "Delete a todo item. REQUIRES CONFIRMATION before execution.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "Todo item ID (required)"
+          },
+          title: {
+            type: "string",
+            description: "Optional: Todo title (for confirmation display)"
+          }
+        },
+        required: ["id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "move_todo",
+      description: "Move a todo item from one list to another. Creates target list if it doesn't exist.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "Todo item ID (required)"
+          },
+          targetList: {
+            type: "string",
+            description: "Target list name (required). List will be created if it doesn't exist."
+          }
+        },
+        required: ["id", "targetList"]
+      }
+    }
+  },
+
   // ===== ADVANCED FEATURES =====
   {
     type: "function",
@@ -726,7 +895,8 @@ export const SMARTCHAT_TOOLS = [
  */
 export const CONFIRMATION_REQUIRED_TOOLS = [
   "delete_event",
-  "delete_reminder"
+  "delete_reminder",
+  "delete_todo"
 ];
 
 /**
@@ -738,6 +908,7 @@ export const QUERY_ONLY_TOOLS = [
   "find_free_time",
   "query_shopping_lists",
   "query_shopping_items",
+  "query_todos",
   "get_weekly_summary",
   "ask_clarification"
 ];
