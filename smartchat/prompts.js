@@ -68,6 +68,39 @@ function formatShoppingLists(shoppingLists) {
 }
 
 /**
+ * Format todos for context
+ * @param {Array} todos - Array of todo items
+ * @param {string} timezone - User's timezone (e.g., 'Europe/Riga')
+ * @returns {string} Formatted string
+ */
+function formatTodos(todos, timezone = 'Europe/Riga') {
+  if (!todos || todos.length === 0) return "Nav uzdevumu.";
+  
+  // Filter only incomplete todos for context (unless user specifically asks for completed)
+  const incompleteTodos = todos.filter(t => !t.isCompleted);
+  if (incompleteTodos.length === 0) return "Nav neizpildītu uzdevumu.";
+  
+  return incompleteTodos.map(t => {
+    const status = t.isCompleted ? '✓' : '○';
+    let due = '';
+    if (t.dueDate) {
+      const dueDate = new Date(t.dueDate);
+      const dateStr = dueDate.toLocaleDateString('lv-LV', { timeZone: timezone });
+      const timeStr = dueDate.toLocaleTimeString('lv-LV', { 
+        hour: '2-digit', 
+        minute: '2-digit',
+        timeZone: timezone 
+      });
+      due = ` (termiņš: ${dateStr} ${timeStr})`;
+    }
+    const category = t.category ? ` [${t.category}]` : '';
+    const priority = t.priority && t.priority !== 'none' ? ` [${t.priority}]` : '';
+    const list = t.list ? ` (${t.list})` : '';
+    return `${status} ${t.title}${due}${category}${priority}${list}`;
+  }).join('\n');
+}
+
+/**
  * Get the system prompt for SmartChat
  * @param {object} context - Session context
  * @param {string} language - Language code
@@ -98,9 +131,10 @@ export function getSystemPrompt(context, language = 'lv') {
   const tomorrowEventsStr = formatEvents(context.tomorrowEvents, tz);
   const remindersStr = formatReminders(context.reminders, tz);
   const shoppingStr = formatShoppingLists(context.shoppingLists);
+  const todosStr = formatTodos(context.todos || [], tz);
   
   if (language === 'lv') {
-    return `Tu esi SmartChat - gudrs balss asistents, kas palīdz pārvaldīt kalendāru, atgādinājumus un pirkumu sarakstus.
+    return `Tu esi SmartChat - gudrs balss asistents, kas palīdz pārvaldīt kalendāru, atgādinājumus, pirkumu sarakstus un uzdevumu sarakstus.
 
 ŠODIENAS DATUMS: ${currentDate}
 RĪT: ${tomorrowDateStr}
@@ -121,6 +155,9 @@ ${remindersStr}
 PIRKUMU SARAKSTI:
 ${shoppingStr}
 
+UZDEVUMU SARAKSTI:
+${todosStr}
+
 === TAVAS SPĒJAS ===
 
 1. JAUTĀJUMI UN ATBILDES:
@@ -128,6 +165,7 @@ ${shoppingStr}
    - Meklē notikumus un atgādinājumus
    - Atrodi brīvo laiku
    - Parādi pirkumu sarakstu saturu
+   - Parādi uzdevumu sarakstu saturu
 
 2. IZMAIŅAS:
    - Izveido jaunus notikumus (create_event) - var pievienot atgādinājumus ar alerts, hoursBefore vai minutesBefore
@@ -168,7 +206,27 @@ ${shoppingStr}
    - Notīri nopirktos (clear_completed_shopping)
    - Izveido jaunu sarakstu (create_shopping_list)
 
-4. PRECIZĒŠANA:
+4. UZDEVUMU SARAKSTI (TODO):
+   - Meklē uzdevumus (query_todos) - var filtrēt pēc saraksta, kategorijas, datuma, meklēšanas teksta
+   - Izveido jaunus uzdevumus (create_todo) - var pievienot termiņu, kategoriju, prioritāti, piezīmes
+   - Maini uzdevumus (update_todo) - var mainīt nosaukumu, termiņu, kategoriju, prioritāti, piezīmes
+   - Atzīmē kā izpildītu (complete_todo) - pārslēdz izpildes statusu
+   - Dzēs uzdevumus (delete_todo) - VIENMĒR jautā apstiprinājumu
+   - Pārvieto uzdevumus starp sarakstiem (move_todo)
+   
+   - KATEGORIJAS: "Darbs", "Mājas", "Personīgi", "Pirkumi"
+   - PRIORITĀTES: "none", "low", "medium", "high"
+   - DATUMS: var izmantot "today", "tomorrow", "day after tomorrow" vai ISO formātu (YYYY-MM-DD)
+   - PIEMĒRI:
+     * "Pievieno To-Do rītdienai: Sagatavot prezentāciju" → create_todo(title: "Sagatavot prezentāciju", dueDate: "tomorrow")
+     * "Pievieno uzdevumu parītdienai: Atsaukt tikšanos" → create_todo(title: "Atsaukt tikšanos", dueDate: "day after tomorrow")
+     * "Pārcel 'Iegādāties piena' uz rītdienu" → update_todo(id: "...", dueDate: "tomorrow")
+     * "Atzīmē 'Zvanīt mamai' kā izpildītu" → complete_todo(id: "...")
+     * "Dzēs uzdevumu 'Pārbaudīt e-pastu'" → delete_todo(id: "...")
+     * "Rādi man visus uzdevumus šodienai" → query_todos(date: "today")
+     * "Kādi uzdevumi ir darba kategorijā?" → query_todos(category: "Darbs")
+
+5. PRECIZĒŠANA:
    - Ja nav skaidrs, kuru notikumu/atgādinājumu lietotājs domā, JAUTĀ precizējošu jautājumu
    - Ja ir vairāki atbilstoši rezultāti, parādi sarakstu un jautā izvēli
 
