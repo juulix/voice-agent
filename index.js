@@ -1854,11 +1854,12 @@ app.post("/ingest-audio", async (req, res) => {
     }
 
     // Transcribe (OpenAI) with retry logic
+    // Optimized: reduced retries from 3 to 2 (faster failure recovery, 0-2000ms savings on errors)
     console.time(`[${req.requestId}] whisper-transcription`);
     const whisperStart = Date.now();
     const file = await toFile(fileBuf, filename, { type: guessMime(filename) });
     let tr;
-    const transcriptionMaxRetries = 3;
+    const transcriptionMaxRetries = 2; // Optimized: reduced from 3 to 2
     let transcriptionRetryCount = 0;
     
     while (transcriptionRetryCount <= transcriptionMaxRetries) {
@@ -1884,8 +1885,8 @@ app.post("/ingest-audio", async (req, res) => {
           throw error;
         }
         
-        // Exponential backoff: 500ms, 1000ms, 2000ms
-        const delay = 500 * Math.pow(2, transcriptionRetryCount - 1);
+        // Exponential backoff: 300ms, 600ms (optimized: faster backoff, reduced from 500ms, 1000ms, 2000ms)
+        const delay = 300 * Math.pow(2, transcriptionRetryCount - 1);
         console.log(`⚠️ Transcription failed (${error.code || error.type}), retrying in ${delay}ms (attempt ${transcriptionRetryCount}/${transcriptionMaxRetries})`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
