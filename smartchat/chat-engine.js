@@ -10,10 +10,107 @@ import { addMessage, addPendingToolCall, getSession } from "./session-manager.js
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Model configuration
-const CHAT_MODEL = process.env.SMARTCHAT_MODEL || "gpt-4o";
+// ========== MODEL CONFIGURATION WITH FALLBACK ==========
+// PRIMARY - new model we're testing
+// FALLBACK - stable model if PRIMARY fails
+const PRIMARY_MODEL = process.env.SMARTCHAT_PRIMARY_MODEL || "gpt-5-mini";
+const FALLBACK_MODEL = process.env.SMARTCHAT_FALLBACK_MODEL || "gpt-4o";
+
+// Legacy alias (for backward compatibility)
+const CHAT_MODEL = PRIMARY_MODEL;
+
 const MAX_TOKENS = 1000;
-const TEMPERATURE = 0.3;
+
+// Reasoning models (GPT-5+) don't support temperature parameter
+const REASONING_MODELS = new Set([
+  "gpt-5", "gpt-5-mini", "gpt-5-nano",
+  "gpt-5.2", "gpt-5.2-pro"
+]);
+
+// Get temperature based on model (reasoning models don't support it)
+function getTemperature(model) {
+  return REASONING_MODELS.has(model) ? undefined : 0.3;
+}
+
+console.log(`🤖 SmartChat model config: PRIMARY=${PRIMARY_MODEL}, FALLBACK=${FALLBACK_MODEL}`);
+
+/**
+ * Call GPT with automatic fallback if PRIMARY fails
+ * @param {object} params - GPT API params (without model)
+ * @param {string} sessionId - Session ID for logging
+ * @returns {object} { response, modelUsed, fallbackUsed }
+ */
+async function callGPTWithFallback(params, sessionId) {
+  const startTime = Date.now();
+  
+  // Try PRIMARY model first
+  try {
+    const primaryParams = {
+      ...params,
+      model: PRIMARY_MODEL
+    };
+    
+    // Add temperature only if model supports it
+    const temp = getTemperature(PRIMARY_MODEL);
+    if (temp !== undefined) {
+      primaryParams.temperature = temp;
+    }
+    
+    const response = await openai.chat.completions.create(primaryParams);
+    const duration = Date.now() - startTime;
+    
+    console.log(`[SmartChat ${sessionId}] 🤖 Model: ${PRIMARY_MODEL} (primary) - ${duration}ms`);
+    
+    return {
+      response,
+      modelUsed: PRIMARY_MODEL,
+      fallbackUsed: false,
+      duration
+    };
+    
+  } catch (primaryError) {
+    console.error(`[SmartChat ${sessionId}] ❌ ${PRIMARY_MODEL} failed:`, primaryError.message);
+    
+    // If PRIMARY fails and it's different from FALLBACK, try FALLBACK
+    if (PRIMARY_MODEL !== FALLBACK_MODEL) {
+      console.log(`[SmartChat ${sessionId}] ⚠️ Falling back to ${FALLBACK_MODEL}...`);
+      
+      try {
+        const fallbackParams = {
+          ...params,
+          model: FALLBACK_MODEL
+        };
+        
+        // Add temperature only if model supports it
+        const temp = getTemperature(FALLBACK_MODEL);
+        if (temp !== undefined) {
+          fallbackParams.temperature = temp;
+        }
+        
+        const response = await openai.chat.completions.create(fallbackParams);
+        const duration = Date.now() - startTime;
+        
+        console.log(`[SmartChat ${sessionId}] ✅ Fallback to ${FALLBACK_MODEL} succeeded - ${duration}ms`);
+        console.log(`[SmartChat ${sessionId}] 🤖 Model: ${FALLBACK_MODEL} (fallback)`);
+        
+        return {
+          response,
+          modelUsed: FALLBACK_MODEL,
+          fallbackUsed: true,
+          primaryError: primaryError.message,
+          duration
+        };
+        
+      } catch (fallbackError) {
+        console.error(`[SmartChat ${sessionId}] ❌ Fallback ${FALLBACK_MODEL} also failed:`, fallbackError.message);
+        throw new Error(`Both ${PRIMARY_MODEL} and ${FALLBACK_MODEL} failed: ${primaryError.message}`);
+      }
+    }
+    
+    // If PRIMARY === FALLBACK, just throw the error
+    throw primaryError;
+  }
+}
 
 // Latvian text normalization rules (Whisper error corrections)
 // ⚠️ SVARĪGI: Šie labojumi ir TIKAI Whisper transkripcijas kļūdām!
@@ -114,20 +211,18 @@ export async function processMessage(session, userMessage) {
     
     console.log(`[SmartChat ${session.id}] Processing message: "${normalizedMessage.substring(0, 50)}..."`);
     
-    // Call GPT with tools
-    const response = await openai.chat.completions.create({
-      model: CHAT_MODEL,
+    // Call GPT with tools (with automatic fallback)
+    const { response, modelUsed, fallbackUsed } = await callGPTWithFallback({
       messages,
       tools: SMARTCHAT_TOOLS,
       tool_choice: "auto",
-      max_tokens: MAX_TOKENS,
-      temperature: TEMPERATURE
-    });
+      max_tokens: MAX_TOKENS
+    }, session.id);
     
     const choice = response.choices[0];
     const processingTime = Date.now() - startTime;
     
-    console.log(`[SmartChat ${session.id}] GPT response in ${processingTime}ms, finish_reason: ${choice.finish_reason}`);
+    console.log(`[SmartChat ${session.id}] GPT response in ${processingTime}ms, finish_reason: ${choice.finish_reason}${fallbackUsed ? ' (fallback)' : ''}`);
     
     // Handle tool calls
     if (choice.message.tool_calls && choice.message.tool_calls.length > 0) {
@@ -436,14 +531,12 @@ export async function processToolResult(session, toolCallId, success, result, er
     console.log(`[SmartChat ${session.id}] Processing tool result for ${toolCallId}, messages: ${messages.length}`);
     
     // Get GPT response based on tool result - WITH TOOLS enabled so GPT can continue to next task
-    const response = await openai.chat.completions.create({
-      model: CHAT_MODEL,
+    const { response, modelUsed, fallbackUsed } = await callGPTWithFallback({
       messages,
       tools: SMARTCHAT_TOOLS,  // Allow GPT to call more tools if needed
       tool_choice: "auto",
-      max_tokens: MAX_TOKENS,
-      temperature: TEMPERATURE
-    });
+      max_tokens: MAX_TOKENS
+    }, session.id);
     
     const choice = response.choices[0];
     const processingTime = Date.now() - startTime;
