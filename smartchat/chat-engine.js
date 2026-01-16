@@ -13,7 +13,8 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 // ========== MODEL CONFIGURATION WITH FALLBACK ==========
 // PRIMARY - new model we're testing
 // FALLBACK - stable model if PRIMARY fails
-const PRIMARY_MODEL = process.env.SMARTCHAT_PRIMARY_MODEL || "gpt-5-mini";
+// NOTE: gpt-5-mini bija pārāk lēns (>20s timeout), tāpēc izmantojam gpt-5-nano
+const PRIMARY_MODEL = process.env.SMARTCHAT_PRIMARY_MODEL || "gpt-5-nano";
 const FALLBACK_MODEL = process.env.SMARTCHAT_FALLBACK_MODEL || "gpt-4o";
 
 // Legacy alias (for backward compatibility)
