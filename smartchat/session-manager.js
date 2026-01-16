@@ -3,27 +3,120 @@
  * Handles session creation, retrieval, and lifecycle management
  */
 
-// In-memory session storage (for production, consider Redis)
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+
+// In-memory session storage
 const sessions = new Map();
 
-// Session cleanup interval (every 5 minutes)
-const CLEANUP_INTERVAL = 5 * 60 * 1000;
-const SESSION_TTL = 30 * 60 * 1000; // 30 minutes
+// Session configuration
+const CLEANUP_INTERVAL = 5 * 60 * 1000;    // Cleanup every 5 minutes
+const SESSION_TTL = 30 * 60 * 1000;         // 30 minutes idle timeout
+const MAX_SESSION_DURATION = 2 * 60 * 60 * 1000; // 2 hours max session duration
+const BACKUP_INTERVAL = 60 * 1000;          // Backup every 1 minute
+
+// Backup file path (use Railway volume if available)
+const BACKUP_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || '/tmp';
+const BACKUP_FILE = path.join(BACKUP_DIR, 'smartchat-sessions.json');
+
+/**
+ * Restore sessions from backup file on startup
+ */
+function restoreSessionsFromBackup() {
+  try {
+    if (fs.existsSync(BACKUP_FILE)) {
+      const data = fs.readFileSync(BACKUP_FILE, 'utf8');
+      const backup = JSON.parse(data);
+      const now = Date.now();
+      let restored = 0;
+      let expired = 0;
+      
+      for (const [id, session] of Object.entries(backup.sessions || {})) {
+        // Check if session is still valid (not expired)
+        if (now < session.expiresAt && now < session.createdAt + MAX_SESSION_DURATION) {
+          sessions.set(id, session);
+          restored++;
+        } else {
+          expired++;
+        }
+      }
+      
+      console.log(`📂 Restored ${restored} sessions from backup (${expired} expired)`);
+    }
+  } catch (error) {
+    console.warn(`⚠️ Could not restore sessions from backup: ${error.message}`);
+  }
+}
+
+/**
+ * Save sessions to backup file
+ */
+function saveSessionsToBackup() {
+  try {
+    const backup = {
+      timestamp: Date.now(),
+      savedAt: new Date().toISOString(),
+      sessionCount: sessions.size,
+      sessions: Object.fromEntries(sessions)
+    };
+    
+    fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup), 'utf8');
+    // Only log if there are sessions to save
+    if (sessions.size > 0) {
+      console.log(`💾 Backed up ${sessions.size} sessions`);
+    }
+  } catch (error) {
+    console.error(`❌ Failed to backup sessions: ${error.message}`);
+  }
+}
+
+// Restore sessions on module load
+restoreSessionsFromBackup();
+
+// Periodic backup
+setInterval(saveSessionsToBackup, BACKUP_INTERVAL);
 
 // Cleanup expired sessions periodically
 setInterval(() => {
   const now = Date.now();
   let cleaned = 0;
   for (const [id, session] of sessions) {
-    if (now > session.expiresAt) {
+    // Check both TTL expiry AND max session duration
+    const isExpired = now > session.expiresAt;
+    const exceedsMaxDuration = now > session.createdAt + MAX_SESSION_DURATION;
+    
+    if (isExpired || exceedsMaxDuration) {
       sessions.delete(id);
       cleaned++;
+      if (exceedsMaxDuration && !isExpired) {
+        console.log(`⏰ Session ${id} exceeded max duration (2h)`);
+      }
     }
   }
   if (cleaned > 0) {
     console.log(`🧹 Cleaned up ${cleaned} expired SmartChat sessions`);
+    saveSessionsToBackup(); // Save after cleanup
   }
 }, CLEANUP_INTERVAL);
+
+// Save sessions on process exit
+process.on('SIGINT', () => {
+  console.log('💾 Saving sessions before shutdown...');
+  saveSessionsToBackup();
+});
+process.on('SIGTERM', () => {
+  console.log('💾 Saving sessions before shutdown...');
+  saveSessionsToBackup();
+});
+
+/**
+ * Generate secure session ID using crypto
+ * @returns {string} Secure random session ID
+ */
+function generateSecureSessionId() {
+  return `sc_${crypto.randomUUID()}`;
+}
 
 /**
  * Create a new chat session
@@ -33,7 +126,7 @@ setInterval(() => {
  * @returns {object} Created session
  */
 export function createSession(userId, context, language = 'lv') {
-  const sessionId = `chat_${userId}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  const sessionId = generateSecureSessionId();
   
   const session = {
     id: sessionId,

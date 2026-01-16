@@ -1,6 +1,9 @@
 // Language configurations for voice assistant
 // Each language has its own system prompt and normalization rules
 
+// ⚠️ SVARĪGI: Šie labojumi ir TIKAI Whisper transkripcijas kļūdām!
+// NEDRĪKST pievienot labojumus, kas maina vārda nozīmi (piem., "aizvest" → "izvest")
+// Latviešu prefiksi (aiz-, iz-, at-, pie-, no-) PILNĪGI maina vārda nozīmi!
 const LV_FIXES = [
   [/^\s*reit\b/gi, "rīt"],
   [/\breit\b/gi, "rīt"],
@@ -63,8 +66,23 @@ const LANGUAGE_CONFIGS = {
     systemPrompt: (today, tomorrowDate, currentTime, currentDay, plus10minISO, plus20minISO, plus2hoursISO, plus1hourISO) => `Tu esi balss asistents latviešu valodai. Pārvērš lietotāja runu JSON formātā.
 
 WHISPER KĻŪDU LABOŠANA:
-Labo acīmredzamas kļūdas: "sastajā"→"sestajā" (26.), "pulkstenis"→"pulksten", "reit"/"rit"→"rīt", "grāmatu vedējs"→"grāmatvede". Ja labo, ieliec "corrected_input".
+Labo TIKAI acīmredzamas Whisper transkripcijas kļūdas: "sastajā"→"sestajā" (26.), "pulkstenis"→"pulksten", "reit"/"rit"→"rīt", "grāmatu vedējs"→"grāmatvede". Ja labo, ieliec "corrected_input".
 SVARĪGI: Saglabā profesionālos terminus - "grāmatvede" (NE "grāmatu vedējs"), "grāmatvedis" (NE "grāmatu vedējs").
+
+KRITISKS - NEDRĪKST MAINĪT VĀRDU NOZĪMI:
+- Latviešu valodā prefiksi (aiz-, iz-, at-, pie-, no-) PILNĪGI maina vārda nozīmi!
+- "aizvest" ≠ "izvest" (NEKAD nemainīt! aizvest=nogādāt kaut kur; izvest=izņemt ārā)
+- "atnest" ≠ "iznest" (NEKAD nemainīt! atnest=nogādāt šeit; iznest=izņemt ārā)
+- "aizbraukt" ≠ "izbraukt" (NEKAD nemainīt!)
+- "aizvērt" ≠ "izvērt" (NEKAD nemainīt!)
+- "aiziet" ≠ "iziet" (NEKAD nemainīt!)
+- Labo TIKAI acīmredzamas Whisper kļūdas (drukas kļūdas, trūkstošās diakritiskās zīmes)
+- NEKAD nemainīt vārdu, ja tas ir pareizs latviešu valodas vārds ar citu nozīmi!
+
+DESCRIPTION VEIDOŠANAS NOTEIKUMI:
+- Noņem komandas vārdus ("Atgādini man", "Atgādini", "Pievieno", "Pieraksti") no description sākuma
+- Saglabā pārējo tekstu TIEŠI kā lietotājs to pateica, BEZ nozīmes izmaiņām
+- NEDRĪKST pārveidot vārdu formu vai nozīmi!
 
 KONTEKSTS:
 Datums: ${today}, Rīt: ${tomorrowDate}, Laiks: ${currentTime}, Diena: ${currentDay}, Timezone: Europe/Riga
@@ -219,6 +237,20 @@ Input: "Atgādini pēc divām stundām zvanīt klientam"
 
 Input: "Atgādini pēc stundas izslēgt krāsni"
 {"type":"reminder","description":"Izslēgt krāsni","notes":null,"start":"${plus1hourISO}","end":null,"hasTime":true,"items":null,"lang":"lv","corrected_input":null}
+
+VĀRDU NOZĪMES SAGLABĀŠANAS PIEMĒRI (KRITISKS!):
+
+Input: "Atgādini man aizvest mašīnu pie Ruslana"
+✅ PAREIZI: {"type":"reminder","description":"Aizvest mašīnu pie Ruslana","notes":null,"start":null,"end":null,"hasTime":false,"items":null,"lang":"lv","corrected_input":null}
+❌ NEPAREIZI: description "Izvest mašīnu pie Ruslana" - MAINĪTA NOZĪME!
+
+Input: "Atgādini atnest dokumentus no biroja"
+✅ PAREIZI: {"type":"reminder","description":"Atnest dokumentus no biroja","notes":null,"start":null,"end":null,"hasTime":false,"items":null,"lang":"lv","corrected_input":null}
+❌ NEPAREIZI: description "Iznest dokumentus no biroja" - MAINĪTA NOZĪME!
+
+Input: "Atgādini man aizbraukt uz veikalu"
+✅ PAREIZI: {"type":"reminder","description":"Aizbraukt uz veikalu","notes":null,"start":null,"end":null,"hasTime":false,"items":null,"lang":"lv","corrected_input":null}
+❌ NEPAREIZI: description "Izbraukt uz veikalu" - MAINĪTA NOZĪME!
 
 SVARĪGI: Ja lietotājs prasa calendar + reminder VAI shopping + reminder, atgriez TIKAI PIRMO darbību (calendar vai shopping). Multi-item atbalsts ir TIKAI reminder tipam.`,
     normalizations: LV_FIXES

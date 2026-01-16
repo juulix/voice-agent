@@ -16,6 +16,9 @@ const MAX_TOKENS = 1000;
 const TEMPERATURE = 0.3;
 
 // Latvian text normalization rules (Whisper error corrections)
+// ⚠️ SVARĪGI: Šie labojumi ir TIKAI Whisper transkripcijas kļūdām!
+// NEDRĪKST pievienot labojumus, kas maina vārda nozīmi (piem., "aizvest" → "izvest")
+// Latviešu prefiksi (aiz-, iz-, at-, pie-, no-) PILNĪGI maina vārda nozīmi!
 const LV_FIXES = [
   [/^\s*reit\b/gi, "rīt"],
   [/\breit\b/gi, "rīt"],

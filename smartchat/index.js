@@ -5,15 +5,23 @@
 
 import express from "express";
 import Busboy from "busboy";
+import crypto from "crypto";
 import { createSession, getSession, deleteSession, updateContext, consumePendingToolCall, getStats } from "./session-manager.js";
 import { processMessage, processToolResult, processAudioMessage } from "./chat-engine.js";
 import { getGreeting } from "./prompts.js";
 
 const router = express.Router();
 
-// Request ID middleware
+// ===== CONFIGURATION =====
+const MAX_MESSAGE_LENGTH = 5000;  // Max 5000 characters per message
+const MAX_CONTEXT_SIZE = 100000; // Max 100KB context
+const ALLOWED_AUDIO_TYPES = ['audio/m4a', 'audio/mp4', 'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/webm', 'audio/x-m4a'];
+const MIN_AUDIO_SIZE = 1024;      // Min 1KB audio file
+const MAX_AUDIO_SIZE = 5 * 1024 * 1024; // Max 5MB audio file
+
+// Request ID middleware with secure random
 router.use((req, res, next) => {
-  req.smartchatRequestId = `sc-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
+  req.smartchatRequestId = `sc-${crypto.randomBytes(8).toString('hex')}`;
   console.log(`[${req.smartchatRequestId}] ${req.method} ${req.path}`);
   next();
 });
@@ -34,6 +42,18 @@ router.post("/session", async (req, res) => {
       return res.status(400).json({
         error: "context_required",
         message: "Context object is required",
+        requestId: req.smartchatRequestId
+      });
+    }
+    
+    // Validate context size
+    const contextSize = JSON.stringify(context).length;
+    if (contextSize > MAX_CONTEXT_SIZE) {
+      return res.status(400).json({
+        error: "context_too_large",
+        message: `Context exceeds maximum size of ${MAX_CONTEXT_SIZE / 1000}KB`,
+        maxSize: MAX_CONTEXT_SIZE,
+        actualSize: contextSize,
         requestId: req.smartchatRequestId
       });
     }
@@ -131,6 +151,17 @@ router.post("/message", async (req, res) => {
       });
     }
     
+    // Validate message length
+    if (message.length > MAX_MESSAGE_LENGTH) {
+      return res.status(400).json({
+        error: "message_too_long",
+        message: `Message exceeds maximum length of ${MAX_MESSAGE_LENGTH} characters`,
+        maxLength: MAX_MESSAGE_LENGTH,
+        actualLength: message.length,
+        requestId: req.smartchatRequestId
+      });
+    }
+    
     const session = getSession(sessionId);
     if (!session) {
       return res.status(404).json({
@@ -182,32 +213,79 @@ router.post("/voice", async (req, res) => {
       });
     }
     
-    // Parse multipart form
+    // Parse multipart form with validation
     let audioBuffer = Buffer.alloc(0);
     let filename = "audio.m4a";
+    let mimeType = null;
+    let fileSizeLimitReached = false;
     
     const bb = Busboy({ 
       headers: req.headers, 
-      limits: { files: 1, fileSize: 5 * 1024 * 1024 } // 5MB limit
+      limits: { 
+        files: 1, 
+        fileSize: MAX_AUDIO_SIZE 
+      }
     });
     
     await new Promise((resolve, reject) => {
       bb.on("file", (_name, stream, info) => {
         filename = info?.filename || filename;
-        stream.on("data", (d) => { audioBuffer = Buffer.concat([audioBuffer, d]); });
+        mimeType = info?.mimeType || null;
+        
+        stream.on("data", (d) => { 
+          audioBuffer = Buffer.concat([audioBuffer, d]); 
+        });
+        stream.on("limit", () => {
+          fileSizeLimitReached = true;
+        });
         stream.on("end", () => {});
       });
       bb.on("error", reject);
       bb.on("finish", resolve);
+      
+      // Timeout after 30 seconds
+      const timeout = setTimeout(() => {
+        reject(new Error("Upload timeout after 30 seconds"));
+      }, 30000);
+      
+      bb.on("finish", () => clearTimeout(timeout));
+      bb.on("error", () => clearTimeout(timeout));
+      
       req.pipe(bb);
     });
     
+    // Validate audio file
     if (audioBuffer.length === 0) {
       return res.status(400).json({
         error: "audio_required",
         message: "Audio file is required",
         requestId: req.smartchatRequestId
       });
+    }
+    
+    if (fileSizeLimitReached) {
+      return res.status(400).json({
+        error: "audio_too_large",
+        message: `Audio file exceeds maximum size of ${MAX_AUDIO_SIZE / 1024 / 1024}MB`,
+        maxSize: MAX_AUDIO_SIZE,
+        requestId: req.smartchatRequestId
+      });
+    }
+    
+    if (audioBuffer.length < MIN_AUDIO_SIZE) {
+      return res.status(400).json({
+        error: "audio_too_small",
+        message: `Audio file is too small (minimum ${MIN_AUDIO_SIZE / 1024}KB)`,
+        minSize: MIN_AUDIO_SIZE,
+        actualSize: audioBuffer.length,
+        requestId: req.smartchatRequestId
+      });
+    }
+    
+    // Validate mime type (if provided)
+    if (mimeType && !ALLOWED_AUDIO_TYPES.includes(mimeType.toLowerCase())) {
+      console.warn(`[${req.smartchatRequestId}] Unexpected audio type: ${mimeType}, proceeding anyway`);
+      // Don't reject - some clients send wrong mime types for valid audio
     }
     
     const result = await processAudioMessage(session, audioBuffer, filename);
@@ -219,9 +297,18 @@ router.post("/voice", async (req, res) => {
     
   } catch (error) {
     console.error(`[${req.smartchatRequestId}] Voice message error:`, error.message);
+    
+    // Provide specific error messages
+    let userMessage = error.message;
+    if (error.message.includes("timeout")) {
+      userMessage = "Upload took too long. Please try a shorter recording.";
+    } else if (error.message.includes("Unexpected end")) {
+      userMessage = "Upload was interrupted. Please try again.";
+    }
+    
     res.status(500).json({
       error: "voice_processing_failed",
-      message: error.message,
+      message: userMessage,
       requestId: req.smartchatRequestId
     });
   }

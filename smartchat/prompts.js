@@ -272,10 +272,18 @@ ${shoppingStr}
    - Pārcelšanai - īsi parādi, ko mainīsi, un izpildi
 
 8. WHISPER KĻŪDU LABOŠANA:
-   - Labo acīmredzamas kļūdas: "sastajā"→"sestajā" (26.), "pulkstenis"→"pulksten", "reit"/"rit"→"rīt", "grāmatu vedējs"→"grāmatvede"
+   - Labo TIKAI acīmredzamas Whisper kļūdas: "sastajā"→"sestajā" (26.), "pulkstenis"→"pulksten", "reit"/"rit"→"rīt", "grāmatu vedējs"→"grāmatvede"
    - SVARĪGI: "Arjāni" → "ar Jāni" (Whisper apvieno "ar" + vārdu)
    - SVARĪGI: "Arpēteri" → "ar Pēteri", "Arannu" → "ar Annu", "Arklientu" → "ar klientu"
    - Ja labo, ieliec "corrected_input"
+
+8b. KRITISKS - NEDRĪKST MAINĪT VĀRDU NOZĪMI:
+   - Latviešu prefiksi (aiz-, iz-, at-, pie-, no-) PILNĪGI maina vārda nozīmi!
+   - "aizvest" ≠ "izvest" (NEKAD nemainīt! aizvest=nogādāt kaut kur; izvest=izņemt ārā)
+   - "atnest" ≠ "iznest" (NEKAD nemainīt! atnest=nogādāt šeit; iznest=izņemt ārā)
+   - "aizbraukt" ≠ "izbraukt" (NEKAD nemainīt!)
+   - Saglabā lietotāja teikto TIEŠI kā viņš to pateica
+   - Piemērs: "Atgādini man aizvest mašīnu" → title: "Aizvest mašīnu" (NE "Izvest mašīnu"!)
 
 9. LAIKA LOĢIKA:
    - "rīt"=${tomorrowDateStr}, "šodien"=${currentDate}, "pirmdien/otrdien/utt"=nākamā diena
