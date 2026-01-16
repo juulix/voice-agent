@@ -27,21 +27,35 @@ if (process.env.SENTRY_DSN) {
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 /* ===== OPENAI HELPER FUNCTIONS ===== */
-// Modeļi, kam NEDRĪKST sūtīt temperature (atsevišķi transcribe/realtime)
-// GPT-5 mini un nano neatbalsta temperature (tikai default 1)
-const FIXED_TEMP_MODELS = new Set([
-  "gpt-4o-mini-transcribe",
-  "gpt-5-mini",
+
+// ========== MODEĻU KONFIGURĀCIJA ==========
+// PRIMARY_MODEL - jauns modelis, ko testējam
+// FALLBACK_MODEL - vecais stabils modelis, ja PRIMARY neizdodas
+const PRIMARY_MODEL = process.env.GPT_PRIMARY_MODEL || "gpt-5-mini";
+const FALLBACK_MODEL = process.env.GPT_FALLBACK_MODEL || "gpt-4.1-mini";
+const CHEAP_TASK_MODEL = process.env.GPT_CHEAP_MODEL || "gpt-4.1-mini";
+
+// Legacy alias (backward compatibility)
+const DEFAULT_TEXT_MODEL = PRIMARY_MODEL;
+
+// Reasoning modeļi (GPT-5+) - neatbalsta temperature, top_p, u.c.
+// Šie modeļi izmanto fiksētu temperature=1 un reasoning_effort parametru
+const REASONING_MODELS = new Set([
+  "gpt-5",
+  "gpt-5-mini", 
   "gpt-5-nano",
-  "gpt-realtime",
+  "gpt-5.2",
+  "gpt-5.2-pro",
 ]);
 
-// Noklusētie modeļi (vieglāk mainīt vienuviet)
-// GPT-5-nano ir pārāk lēns (9-16s vs 1-3s GPT-4.1-mini), atgriezts uz GPT-4.1-mini
-const DEFAULT_TEXT_MODEL = process.env.GPT_MODEL || "gpt-4.1-mini";   // galvenajām operācijām
-const CHEAP_TASK_MODEL  = process.env.GPT_MODEL || "gpt-4.1-mini";    // kopsavilkumi/klasifikācija u.tml.
+// Modeļi, kam NEDRĪKST sūtīt temperature (transcribe/realtime + reasoning)
+const FIXED_TEMP_MODELS = new Set([
+  "gpt-4o-mini-transcribe",
+  "gpt-realtime",
+  ...REASONING_MODELS, // Visi reasoning modeļi
+]);
 
-console.log(`✅ Using GPT model: ${DEFAULT_TEXT_MODEL}`);
+console.log(`✅ Model config: PRIMARY=${PRIMARY_MODEL}, FALLBACK=${FALLBACK_MODEL}`);
 
 /**
  * Build OpenAI API parameters with automatic temperature and token handling
@@ -761,8 +775,15 @@ async function parseWithGPT(text, requestId, nowISO, langHint = 'lv', modelName 
           raw_transcript: text,
           normalized_transcript: text,
           confidence: 0.95,
-          source: modelName
+          source: modelName,
+          // Jauni lauki modeļu monitoringam
+          model_used: modelName,
+          fallback_used: false
         };
+        
+        // Log kurš modelis tika izmantots
+        const isPrimary = modelName === PRIMARY_MODEL;
+        console.log(`[${requestId}] 🤖 Model: ${modelName}${isPrimary ? ' (primary)' : ' (fallback)'} - ${reminders.length} reminders`);
         
         // Cache the result (1 hour TTL)
         aiCache.set(cacheKey, {
@@ -789,8 +810,15 @@ async function parseWithGPT(text, requestId, nowISO, langHint = 'lv', modelName 
           raw_transcript: text,
           normalized_transcript: text,
           confidence: 0.95,
-          source: modelName
+          source: modelName,
+          // Jauni lauki modeļu monitoringam
+          model_used: modelName,
+          fallback_used: false
         };
+        
+        // Log kurš modelis tika izmantots
+        const isPrimary = modelName === PRIMARY_MODEL;
+        console.log(`[${requestId}] 🤖 Model: ${modelName}${isPrimary ? ' (primary)' : ' (fallback)'}`);
         
         // Cache the result (1 hour TTL)
         aiCache.set(cacheKey, {
@@ -816,8 +844,15 @@ async function parseWithGPT(text, requestId, nowISO, langHint = 'lv', modelName 
       raw_transcript: text,
       normalized_transcript: text,
       confidence: 0.95,
-      source: modelName
+      source: modelName,
+      // Jauni lauki modeļu monitoringam
+      model_used: modelName,
+      fallback_used: false
     };
+    
+    // Log kurš modelis tika izmantots
+    const isPrimary = modelName === PRIMARY_MODEL;
+    console.log(`[${requestId}] 🤖 Model: ${modelName}${isPrimary ? ' (primary)' : ' (fallback)'}`);
     
     // Cache the result (1 hour TTL)
     aiCache.set(cacheKey, {
@@ -828,20 +863,27 @@ async function parseWithGPT(text, requestId, nowISO, langHint = 'lv', modelName 
     return result;
     
   } catch (error) {
-    console.error(`[${requestId}] GPT parsing error (${modelName}):`, error);
+    console.error(`[${requestId}] ❌ GPT parsing error (${modelName}):`, error.message);
     
-    // Fallback: ja GPT-5-nano neizdodas, mēģinām GPT-4.1-mini
-    if (modelName === 'gpt-5-nano' && DEFAULT_TEXT_MODEL === 'gpt-5-nano') {
-      console.log(`[${requestId}] ⚠️ GPT-5-nano failed, falling back to GPT-4.1-mini`);
+    // Fallback: ja PRIMARY_MODEL neizdodas, mēģinām FALLBACK_MODEL
+    // Bet TIKAI ja esam mēģinājuši ar PRIMARY un tas nav tas pats kas FALLBACK
+    if (modelName === PRIMARY_MODEL && PRIMARY_MODEL !== FALLBACK_MODEL) {
+      console.log(`[${requestId}] ⚠️ ${PRIMARY_MODEL} failed, falling back to ${FALLBACK_MODEL}`);
       try {
-        return await parseWithGPT(text, requestId, nowISO, langHint, 'gpt-4.1-mini');
+        const fallbackResult = await parseWithGPT(text, requestId, nowISO, langHint, FALLBACK_MODEL);
+        // Atzīmējam, ka tika izmantots fallback
+        fallbackResult.model_used = FALLBACK_MODEL;
+        fallbackResult.fallback_used = true;
+        fallbackResult.primary_error = error.message;
+        console.log(`[${requestId}] ✅ Fallback to ${FALLBACK_MODEL} succeeded`);
+        return fallbackResult;
       } catch (fallbackError) {
-        console.error(`[${requestId}] Fallback to GPT-4.1-mini also failed:`, fallbackError);
-        throw new Error(`GPT parsing failed (nano + fallback): ${error.message}`);
+        console.error(`[${requestId}] ❌ Fallback to ${FALLBACK_MODEL} also failed:`, fallbackError.message);
+        throw new Error(`GPT parsing failed (${PRIMARY_MODEL} + ${FALLBACK_MODEL} fallback): ${error.message}`);
       }
     }
     
-    throw new Error(`GPT parsing failed: ${error.message}`);
+    throw new Error(`GPT parsing failed (${modelName}): ${error.message}`);
   }
 }
 

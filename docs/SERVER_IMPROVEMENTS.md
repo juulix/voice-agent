@@ -40,6 +40,54 @@
 
 ---
 
+### 0b. GPT-5 ar Fallback Sistēmu (Jauns!)
+
+**Mērķis:** Testēt jaunākos GPT-5 modeļus bez riska sabojāt produkciju.
+
+**Fails:** `index.js`
+
+**Konfigurācija:**
+```javascript
+PRIMARY_MODEL = "gpt-5-mini"      // Jauns modelis (testējam)
+FALLBACK_MODEL = "gpt-4.1-mini"   // Vecais stabils (backup)
+```
+
+**Darbības princips:**
+```
+Pieprasījums
+    ↓
+[GPT-5-mini] ──► Izdevās? ──► Atgriež rezultātu
+    │                         + model_used: "gpt-5-mini"
+    │                         + fallback_used: false
+    ❌ Kļūda
+    ↓
+[GPT-4.1-mini fallback] ──► Atgriež rezultātu
+                            + model_used: "gpt-4.1-mini"
+                            + fallback_used: true
+                            + primary_error: "..."
+```
+
+**Jauni lauki API atbildē:**
+- `model_used` - kāds modelis tika izmantots
+- `fallback_used` - vai tika izmantots fallback
+- `primary_error` - kāpēc PRIMARY neizdevās (ja fallback)
+
+**Logs piemērs:**
+```
+[req-xxx] 🤖 Model: gpt-5-mini (primary)
+[req-yyy] ⚠️ gpt-5-mini failed, falling back to gpt-4.1-mini
+[req-yyy] ✅ Fallback to gpt-4.1-mini succeeded
+[req-yyy] 🤖 Model: gpt-4.1-mini (fallback)
+```
+
+**Environment variables:**
+```bash
+GPT_PRIMARY_MODEL=gpt-5-mini      # Jauns modelis
+GPT_FALLBACK_MODEL=gpt-4.1-mini   # Vecais modelis
+```
+
+---
+
 ### 1. Session Persistence (Kritisks)
 
 **Problēma:** In-memory sessions pazuda, ja Railway restartējās.
