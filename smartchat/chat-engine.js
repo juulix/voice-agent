@@ -11,10 +11,10 @@ import { addMessage, addPendingToolCall, getSession } from "./session-manager.js
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // ========== MODEL CONFIGURATION WITH FALLBACK ==========
-// PRIMARY - new model we're testing
-// FALLBACK - stable model if PRIMARY fails
-// NOTE: gpt-5-mini bija pārāk lēns (>20s timeout), tāpēc izmantojam gpt-5-nano
-const PRIMARY_MODEL = process.env.SMARTCHAT_PRIMARY_MODEL || "gpt-5-nano";
+// PRIMARY - galvenais modelis
+// FALLBACK - backup modelis, ja PRIMARY neizdodas
+// NOTE: GPT-5 modeļi (mini/nano) bija pārāk lēni (14-20s), atgriezāmies pie GPT-4o
+const PRIMARY_MODEL = process.env.SMARTCHAT_PRIMARY_MODEL || "gpt-4o";
 const FALLBACK_MODEL = process.env.SMARTCHAT_FALLBACK_MODEL || "gpt-4o";
 
 // Legacy alias (for backward compatibility)

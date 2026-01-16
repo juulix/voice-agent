@@ -29,10 +29,10 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 /* ===== OPENAI HELPER FUNCTIONS ===== */
 
 // ========== MODEĻU KONFIGURĀCIJA ==========
-// PRIMARY_MODEL - jauns modelis, ko testējam
-// FALLBACK_MODEL - vecais stabils modelis, ja PRIMARY neizdodas
-// NOTE: gpt-5-mini bija pārāk lēns (>20s timeout), tāpēc izmantojam gpt-5-nano
-const PRIMARY_MODEL = process.env.GPT_PRIMARY_MODEL || "gpt-5-nano";
+// PRIMARY_MODEL - galvenais modelis
+// FALLBACK_MODEL - backup modelis, ja PRIMARY neizdodas
+// NOTE: GPT-5 modeļi (mini/nano) bija pārāk lēni (14-20s), atgriezāmies pie GPT-4.1-mini
+const PRIMARY_MODEL = process.env.GPT_PRIMARY_MODEL || "gpt-4.1-mini";
 const FALLBACK_MODEL = process.env.GPT_FALLBACK_MODEL || "gpt-4.1-mini";
 const CHEAP_TASK_MODEL = process.env.GPT_CHEAP_MODEL || "gpt-4.1-mini";
 
