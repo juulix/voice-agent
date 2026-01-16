@@ -7,6 +7,39 @@
 
 ## 📋 Veiktie Uzlabojumi
 
+### 0. Log Optimizācija (Jauns!)
+
+**Problēma:** Pārāk verbose logs - 25-30 rindas per request.
+
+**Risinājums:** Kompakti logi ar atomic logging.
+
+**Fails:** `index.js`
+
+**Izmaiņas:**
+- Noņemta `logTranscriptFlow` funkcija (80+ rindas) - dublikāts
+- PROFILING samazināts no 14 rindām uz 1 rindu
+- Structured logging filtrē `undefined` values
+- 422 error atbildes tagad satur `message` lauku
+- Error details automātiski tiek pievienoti log objektam
+
+**Piemērs (pirms):**
+```
+⏱️  [req-xxx] === PROFILING ===
+   Auth:           0ms
+   Idempotency:    0ms
+   getUserUsage:   1ms
+   Busboy:         30ms
+   Whisper:        595ms (26.4%)
+   ...14 rindas...
+```
+
+**Piemērs (pēc):**
+```
+⏱️ [req-xxx] 2258ms (Whisper: 595ms/26%, GPT: 1631ms/72%)
+```
+
+---
+
 ### 1. Session Persistence (Kritisks)
 
 **Problēma:** In-memory sessions pazuda, ja Railway restartējās.

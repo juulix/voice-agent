@@ -363,20 +363,35 @@ app.use((req, res, next) => {
   
   res.send = function(data) {
     const duration = Date.now() - start;
+    
+    // Build log object, filtering out undefined values
     const logData = {
       requestId: req.requestId,
       userId: req.userId || 'anon',
       method: req.method,
       path: req.path,
       statusCode: res.statusCode,
-      duration: `${duration}ms`,
-      userAgent: req.header('User-Agent'),
-      appVersion: req.header('X-App-Version'),
-      deviceId: req.header('X-Device-Id'),
-      plan: req.header('X-Plan')
+      duration: `${duration}ms`
     };
     
+    // Only add optional fields if they exist
+    const userAgent = req.header('User-Agent');
+    const appVersion = req.header('X-App-Version');
+    const deviceId = req.header('X-Device-Id');
+    const plan = req.header('X-Plan');
+    
+    if (userAgent) logData.userAgent = userAgent;
+    if (appVersion) logData.appVersion = appVersion;
+    if (deviceId) logData.deviceId = deviceId;
+    if (plan) logData.plan = plan;
+    
+    // Add error details for 4xx/5xx responses
     if (res.statusCode >= 400) {
+      try {
+        const parsedData = typeof data === 'string' ? JSON.parse(data) : data;
+        if (parsedData?.error) logData.error = parsedData.error;
+        if (parsedData?.message) logData.message = parsedData.message;
+      } catch (e) { /* ignore parse errors */ }
       console.error(`❌ [${req.requestId}] ${req.method} ${req.path} - ${res.statusCode} (${duration}ms)`, logData);
     } else {
       console.log(`✅ [${req.requestId}] ${req.method} ${req.path} - ${res.statusCode} (${duration}ms)`, logData);
@@ -1508,89 +1523,6 @@ app.get("/quota", async (req, res) => {
   }
 });
 
-/* ===== HELPER FUNCTIONS ===== */
-
-// Log transcript flow for debugging - GPT-4.1-mini ONLY (V3 removed)
-function logTranscriptFlow(req, res, raw, norm, analyzedText, needsAnalysis, score, out) {
-  const requestId = req.requestId.slice(-8);
-  const isError = res.statusCode >= 400;
-  const debugMode = process.env.DEBUG_TRANSCRIPT === 'true';
-  const alwaysLogFull = process.env.LOG_FULL_TRANSCRIPT === 'true'; // Vienmēr logē pilnu tekstu
-  
-  // GPT-4.1-mini result (V3 removed)
-  const correctedInput = out.corrected_input || null;
-  
-  // PILNS TEKSTA PLŪSMA LOG (vienmēr)
-  console.log(`\n📊 [${requestId}] === TEKSTA PLŪSMA ===`);
-  console.log(`🎤 [1] Whisper (raw):        "${raw}"`);
-  console.log(`🔧 [2] Normalized:          "${norm}"`);
-  if (correctedInput) {
-    console.log(`🤖 [3] GPT Corrected:        "${correctedInput}" (fixed Whisper errors)`);
-  } else {
-    console.log(`🤖 [3] GPT Analysis:         No corrections needed`);
-  }
-  
-  // Handle multi-item vs single item logging
-  if (out.type === "reminders" && Array.isArray(out.reminders)) {
-    console.log(`📤 [4] Final Result:         ${out.reminders.length} items (type: ${out.type})`);
-    out.reminders.forEach((item, idx) => {
-      console.log(`   └─ [${idx + 1}] ${item.type}: "${item.description || 'N/A'}"${item.start ? ' @ ' + item.start : ''}`);
-    });
-  } else {
-    const finalDescription = out.description || 'N/A';
-    console.log(`📤 [4] Final Result:         "${finalDescription}" (type: ${out.type})`);
-    if (out.start) console.log(`   └─ Start: ${out.start}`);
-    if (out.end) console.log(`   └─ End: ${out.end}`);
-  }
-  console.log(`📊 [${requestId}] ========================\n`);
-  
-  // Detalizēts JSON log (ja DEBUG_TRANSCRIPT vai error)
-  if (debugMode || isError || alwaysLogFull) {
-    console.log(JSON.stringify({
-      requestId: req.requestId,
-      timestamp: new Date().toISOString(),
-      transcriptFlow: {
-        whisper_raw: raw,
-        normalized: norm,
-        corrected_input: correctedInput,
-        qualityScore: score,
-        gpt41Result: out.type === "reminders" && Array.isArray(out.reminders) ? {
-          type: out.type,
-          count: out.reminders.length,
-          reminders: out.reminders.map(item => ({
-            type: item.type,
-            description: item.description,
-            start: item.start,
-            end: item.end,
-            hasTime: item.hasTime,
-            items: item.items
-          }))
-        } : {
-          type: out.type,
-          description: out.description || 'N/A',
-          start: out.start,
-          end: out.end,
-          hasTime: out.hasTime,
-          items: out.items,
-          lang: out.lang
-        },
-        clientFinal: out.type === "reminders" && Array.isArray(out.reminders) ? {
-          type: out.type,
-          count: out.reminders.length,
-          reminders: out.reminders
-        } : {
-          type: out.type,
-          description: out.description || 'N/A',
-          start: out.start,
-          end: out.end,
-          hasTime: out.hasTime,
-          items: out.items
-        }
-      }
-    }, null, 2));
-  }
-}
-
 /* ===== POST /ingest-audio ===== */
 // Testa endpoints - pieņem tīru tekstu (bez audio faila)
 // Lietojums: POST /test-parse {"text": "Rīt pulksten divos tikšanās ar Jāni"}
@@ -1850,7 +1782,11 @@ app.post("/ingest-audio", async (req, res) => {
       if (u.daily.graceUsed < GRACE_DAILY) u.daily.graceUsed += 1;
       await updateQuotaUsage(userId, limits.plan, u.daily.used, u.daily.graceUsed, limits.monthlyLimit || 0);
       databaseOperations.inc({ operation: "update", table: "quota_usage" }, 1);
-      return res.status(422).json({ error: "no_speech_detected_client", details: { vadActiveSeconds, recordingDurationSeconds } });
+      return res.status(422).json({ 
+        error: "no_speech_detected_client", 
+        message: "Recording too short or no speech detected",
+        details: { vadActiveSeconds, recordingDurationSeconds } 
+      });
     }
 
     // Transcribe (OpenAI) with retry logic
@@ -1992,19 +1928,10 @@ app.post("/ingest-audio", async (req, res) => {
       const sumOfTimings = (timings.auth || 0) + (timings.idempotency || 0) + (timings.getUserUsage || 0) + (timings.busboy || 0) + (timings.whisper || 0) + (timings.normalization || 0) + (timings.gptParse || 0);
       timings.other = timings.total - sumOfTimings;
       
-      console.log(`⏱️  [${req.requestId}] === PROFILING ===`);
-      console.log(`   Auth:           ${timings.auth || 0}ms`);
-      console.log(`   Idempotency:    ${timings.idempotency || 0}ms`);
-      console.log(`   getUserUsage:   ${timings.getUserUsage || 0}ms`);
-      console.log(`   Busboy:         ${timings.busboy || 0}ms`);
-      console.log(`   Whisper:        ${timings.whisper || 0}ms (${timings.total > 0 ? ((timings.whisper / timings.total) * 100).toFixed(1) : 0}%)`);
-      console.log(`   Normalization:  ${timings.normalization || 0}ms`);
-      console.log(`   GPT Parse:      ${timings.gptParse || 0}ms (${timings.total > 0 ? ((timings.gptParse / timings.total) * 100).toFixed(1) : 0}%)`);
-      console.log(`   Quota Update:   ${timings.quotaUpdate || 0}ms`);
-      console.log(`   Other:          ${timings.other || 0}ms`);
-      console.log(`   TOTAL:          ${timings.total}ms`);
-      console.log(`✅ Duration: ${timings.total}ms`);
-      console.log(`📊 [${req.requestId}] ========================\n`);
+      // Compact profiling summary (1 line instead of 14)
+      const whisperPct = timings.total > 0 ? ((timings.whisper / timings.total) * 100).toFixed(0) : 0;
+      const gptPct = timings.total > 0 ? ((timings.gptParse / timings.total) * 100).toFixed(0) : 0;
+      console.log(`⏱️ [${req.requestId}] ${timings.total}ms (Whisper: ${timings.whisper}ms/${whisperPct}%, GPT: ${timings.gptParse}ms/${gptPct}%)`);
       
     } catch (error) {
       console.timeEnd(`[${req.requestId}] gpt-parse`);
@@ -2086,9 +2013,6 @@ app.post("/ingest-audio", async (req, res) => {
       const processingTime = Date.now() - processingStart;
       audioProcessingTime.observe({ status: "success" }, processingTime);
       
-      // Log transcript flow
-    logTranscriptFlow(req, res, raw, norm, norm, false, score, finalResult);
-    
     return res.json(finalResult);
 
   } catch (e) {
@@ -2191,7 +2115,11 @@ app.post("/api/notes/create", async (req, res) => {
     const transcript = (tr.text || "").trim();
 
     if (!transcript || transcript.length < 2) {
-      return res.status(422).json({ error: "empty_transcript", requestId });
+      return res.status(422).json({ 
+        error: "empty_transcript", 
+        message: "Transcription resulted in empty or too short text",
+        requestId 
+      });
     }
 
     // Generate title, summary, and emoji with GPT
@@ -2585,7 +2513,11 @@ app.post("/api/notes/update-with-voice", async (req, res) => {
     const userInstruction = (tr.text || "").trim();
 
     if (!userInstruction || userInstruction.length < 2) {
-      return res.status(422).json({ error: "empty_instruction", requestId });
+      return res.status(422).json({ 
+        error: "empty_instruction", 
+        message: "Instruction audio was too short or empty",
+        requestId 
+      });
     }
 
     console.log(`[${requestId}] User instruction: "${userInstruction}"`);
