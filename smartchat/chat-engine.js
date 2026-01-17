@@ -8,7 +8,16 @@ import { SMARTCHAT_TOOLS, requiresConfirmation, isQueryTool } from "./tools.js";
 import { getSystemPrompt, getConfirmationMessage } from "./prompts.js";
 import { addMessage, addPendingToolCall, getSession } from "./session-manager.js";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Validate API key before creating OpenAI client
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+if (!OPENAI_API_KEY) {
+  console.error("❌ Missing OPENAI_API_KEY environment variable");
+  console.error("❌ SmartChat cannot function without OpenAI API key");
+  // Don't crash here - let the main server handle it
+  // But log the error clearly
+}
+
+const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
 // ========== MODEL CONFIGURATION WITH FALLBACK ==========
 // PRIMARY - galvenais modelis
@@ -42,6 +51,11 @@ console.log(`🤖 SmartChat model config: PRIMARY=${PRIMARY_MODEL}, FALLBACK=${F
  * @returns {object} { response, modelUsed, fallbackUsed }
  */
 async function callGPTWithFallback(params, sessionId) {
+  // Check if OpenAI client is initialized
+  if (!openai) {
+    throw new Error("OpenAI client not initialized: OPENAI_API_KEY is missing");
+  }
+  
   const startTime = Date.now();
   
   // Try PRIMARY model first
@@ -610,6 +624,11 @@ const TRANSCRIPTION_TIMEOUT_MS = 30000;
  * @returns {object} Response object
  */
 export async function processAudioMessage(session, audioBuffer, filename = "audio.m4a") {
+  // Check if OpenAI client is initialized
+  if (!openai) {
+    throw new Error("OpenAI client not initialized: OPENAI_API_KEY is missing");
+  }
+  
   const startTime = Date.now();
   
   try {
