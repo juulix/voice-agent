@@ -17,8 +17,16 @@ const MAX_SESSION_DURATION = 2 * 60 * 60 * 1000; // 2 hours max session duration
 const BACKUP_INTERVAL = 60 * 1000;          // Backup every 1 minute
 
 // Backup file path (use Railway volume if available)
+// ⚠️ WARNING: /tmp is NOT persistent on Railway - sessions will be lost on restart!
+// To fix: Set RAILWAY_VOLUME_MOUNT_PATH environment variable in Railway dashboard
 const BACKUP_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || '/tmp';
 const BACKUP_FILE = path.join(BACKUP_DIR, 'smartchat-sessions.json');
+
+// Warn if using /tmp (non-persistent)
+if (BACKUP_DIR === '/tmp' && !process.env.RAILWAY_VOLUME_MOUNT_PATH) {
+  console.warn('⚠️ WARNING: Using /tmp for session backup (NOT persistent on Railway!)');
+  console.warn('⚠️ Sessions will be lost on server restart. Set RAILWAY_VOLUME_MOUNT_PATH to fix.');
+}
 
 /**
  * Restore sessions from backup file on startup

@@ -1622,7 +1622,9 @@ app.post("/test-parse-gpt5-mini", async (req, res) => {
     const analyzedText = norm;
     const langHint = 'lv';
     const nowISO = toRigaISO(new Date());
-    const modelName = 'gpt-5-mini';
+    // ⚠️ TEST ENDPOINT: gpt-5-mini doesn't exist, using gpt-4.1-mini instead
+    // This endpoint is for testing only, not production
+    const modelName = 'gpt-4.1-mini'; // Changed from 'gpt-5-mini' (doesn't exist)
     
     console.log(`🧭 [TEST] ${modelName} attempting parse: "${analyzedText}"`);
     try {
